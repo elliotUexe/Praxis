@@ -1,6 +1,6 @@
 # Praxis
 
-App macOS native (SwiftUI) de transcription de cours et de gestion de tâches, avec extraction assistée par LLM local. Anciennement AuTex (prototype Python antérieur, hors de ce dépôt).
+Système d'enregistrement, de transcription et de génération de todoliste et de résumés — app macOS native (SwiftUI), avec extraction assistée par LLM local. Anciennement AuTex (prototype Python antérieur, hors de ce dépôt).
 
 ## Prérequis
 
@@ -25,3 +25,7 @@ Le modèle LLM local (Qwen2.5-7B-Instruct-4bit, ~4-5 Go) se télécharge à la p
 - `Praxis/` — code source de l'app (App, AI, Audio, Storage, Transcription, Tasks, Resources).
 - `PraxisSmokeTest/` — outil CLI de test rapide de la transcription WhisperKit.
 - `project.yml` — source de vérité du projet Xcode (xcodegen).
+
+## Licence
+
+Apache 2.0 — voir `LICENSE`.
