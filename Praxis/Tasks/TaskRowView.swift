@@ -38,6 +38,7 @@ struct TaskRowView: View {
                         .foregroundStyle(.tertiary)
                 }
                 secondaryInfo
+                subtaskSummary
             }
             Spacer()
         }
@@ -91,6 +92,17 @@ struct TaskRowView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var subtaskSummary: some View {
+        if !task.subtasks.isEmpty {
+            let done = task.subtasks.filter(\.isDone).count
+            let remainingMinutes = task.subtasks.filter { !$0.isDone }.map(\.estimatedMinutes).reduce(0, +)
+            Text("\(done)/\(task.subtasks.count) sous-tâches · \(remainingMinutes) min restantes")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 

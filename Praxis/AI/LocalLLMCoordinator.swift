@@ -21,6 +21,7 @@ final class LocalLLMCoordinator: ObservableObject {
     @Published private(set) var isModelLoaded = false
     @Published private(set) var isLoadingModel = false
     @Published private(set) var isProcessing = false
+    @Published private(set) var isProposingSubtasks = false
     @Published var lastError: String?
     @Published private(set) var rollingSummaryMarkdown: String = ""
 
@@ -206,6 +207,92 @@ final class LocalLLMCoordinator: ObservableObject {
         taskStore.save()
     }
 
+    // MARK: - Subtask proposals ("Découper avec l'IA")
+
+    /// Proposes a timed subtask breakdown for a macro task — e.g. "faire un dossier de 10
+    /// pages" → "Définir le plan" (30 min), one block per part, "Relecture" (1h). Never
+    /// writes to SwiftData itself: `SubtaskProposalView` shows the result for Pierre to
+    /// edit/accept first, same review-before-commit spirit as `needsReview` on extracted
+    /// tasks. `existingSubtasks` non-empty means "régénérer" — the prompt is told what's
+    /// already done so it adjusts the remaining breakdown instead of starting over.
+    func proposeSubtasks(
+        taskTitle: String,
+        taskDetail: String?,
+        taskType: TaskType,
+        dueDate: Date?,
+        existingSubtasks: [(title: String, isDone: Bool)]
+    ) async -> [ProposedSubtask] {
+        isProposingSubtasks = true
+        defer { isProposingSubtasks = false }
+
+        await prepareIfNeeded()
+        guard let chatSession else { return [] }
+
+        let prompt = Self.subtaskProposalPrompt(
+            taskTitle: taskTitle,
+            taskDetail: taskDetail,
+            taskType: taskType,
+            dueDate: dueDate,
+            existingSubtasks: existingSubtasks
+        )
+        guard let response = try? await chatSession.respond(to: prompt),
+              let raw = Self.parseSubtaskProposals(from: response) else { return [] }
+        return raw.map { ProposedSubtask(title: $0.title, estimatedMinutes: $0.estimatedMinutes) }
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "fr_FR")
+        f.dateFormat = "d MMMM"
+        return f
+    }()
+
+    private static func subtaskProposalPrompt(
+        taskTitle: String,
+        taskDetail: String?,
+        taskType: TaskType,
+        dueDate: Date?,
+        existingSubtasks: [(title: String, isDone: Bool)]
+    ) -> String {
+        var context = "Tâche : \"\(taskTitle)\"\n"
+        if let taskDetail, !taskDetail.isEmpty {
+            context += "Détail : \(taskDetail)\n"
+        }
+        context += "Type : \(taskType.displayName)\n"
+        if let dueDate {
+            context += "Échéance : \(dayFormatter.string(from: dueDate))\n"
+        }
+
+        var progressContext = ""
+        if !existingSubtasks.isEmpty {
+            let lines = existingSubtasks
+                .map { "- [\($0.isDone ? "fait" : "à faire")] \($0.title)" }
+                .joined(separator: "\n")
+            progressContext = """
+
+
+            Sous-tâches déjà définies (avec leur état actuel) :
+            \(lines)
+
+            Propose une suite cohérente avec ce qui est déjà fait — ne répète pas ce qui est terminé, ajuste le reste du découpage en fonction de l'avancement réel.
+            """
+        }
+
+        return """
+        Tu proposes un découpage en sous-tâches concrètes et chronométrées pour aider à réaliser une tâche. Chaque sous-tâche est une étape actionnable avec une durée réaliste en minutes — privilégie des blocs de 15 à 90 minutes, ni des micro-étapes de 5 minutes ni un seul bloc de plusieurs heures.
+
+        \(context)\(progressContext)
+
+        Réponds UNIQUEMENT avec un JSON valide de cette forme exacte, sans texte autour, sans balises markdown :
+        {"subtasks": [{"title": "...", "estimatedMinutes": 30}]}
+        """
+    }
+
+    private static func parseSubtaskProposals(from response: String) -> [RawProposedSubtask]? {
+        guard let data = extractJSONData(from: response) else { return nil }
+        return try? JSONDecoder().decode(SubtaskProposalResponse.self, from: data).subtasks
+    }
+
     // MARK: - Extraction prompt + parsing
 
     private static func extractionPrompt(for text: String, courseName: String?) -> String {
@@ -232,12 +319,19 @@ final class LocalLLMCoordinator: ObservableObject {
     }
 
     private static func parseCandidates(from response: String) -> [ExtractedTaskCandidate]? {
+        guard let data = extractJSONData(from: response) else { return nil }
+        return try? JSONDecoder().decode(ExtractionResponse.self, from: data).tasks
+    }
+
+    /// Shared by every JSON-producing prompt in this file (task extraction, subtask
+    /// proposals): local models don't reliably skip the occasional stray sentence around
+    /// the JSON despite instructions, so take the outermost `{...}` span rather than
+    /// trusting the response to be pure JSON.
+    private static func extractJSONData(from response: String) -> Data? {
         guard let openBrace = response.firstIndex(of: "{"),
               let closeBrace = response.lastIndex(of: "}"),
               openBrace < closeBrace else { return nil }
-        let jsonString = String(response[openBrace...closeBrace])
-        guard let data = jsonString.data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(ExtractionResponse.self, from: data).tasks
+        return String(response[openBrace...closeBrace]).data(using: .utf8)
     }
 
     /// Splits into ~`maxWords`-word chunks on paragraph boundaries where possible, so the
@@ -295,4 +389,22 @@ private struct ExtractedTaskCandidate: Decodable {
             task.horizonDate = date
         }
     }
+}
+
+/// A subtask candidate shown for review in `SubtaskProposalView` — not yet a persisted
+/// `Subtask`. `id` is synthesized locally (never decoded from the LLM's JSON) purely so
+/// SwiftUI can diff the proposal list; it has no relation to `Subtask.id`.
+struct ProposedSubtask: Identifiable, Equatable {
+    let id = UUID()
+    var title: String
+    var estimatedMinutes: Int
+}
+
+private struct SubtaskProposalResponse: Decodable {
+    let subtasks: [RawProposedSubtask]
+}
+
+private struct RawProposedSubtask: Decodable {
+    let title: String
+    let estimatedMinutes: Int
 }

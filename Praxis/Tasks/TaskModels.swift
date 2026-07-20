@@ -69,6 +69,9 @@ final class PraxisTask {
     @Relationship(deleteRule: .cascade, inverse: \TaskComment.task)
     var comments: [TaskComment] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \Subtask.parentTask)
+    var subtasks: [Subtask] = []
+
     var type: TaskType {
         get { TaskType(rawValue: typeRaw) ?? .anticipation }
         set { typeRaw = newValue.rawValue }
@@ -128,5 +131,37 @@ final class TaskComment {
         self.source = source
         self.createdAt = Date()
         self.task = task
+    }
+}
+
+/// A timed chunk of a macro task — either typed in by hand or accepted from an LLM
+/// proposal (`origin`, same "manuel" | "llm_local" vocabulary as `PraxisTask.origin`).
+/// A dedicated entity rather than a self-referencing `PraxisTask`: none of the type-specific
+/// fields (`dueDate`, `blockedReason`, ...) make sense on a subtask, which only ever needs a
+/// title, a time estimate, and a done/not-done state.
+@Model
+final class Subtask {
+    @Attribute(.unique) var id: UUID
+    var title: String
+    var estimatedMinutes: Int
+    var isDone: Bool
+    var order: Int
+    var origin: String
+    var parentTask: PraxisTask?
+
+    init(
+        title: String,
+        estimatedMinutes: Int,
+        order: Int,
+        origin: String = "manuel",
+        parentTask: PraxisTask? = nil
+    ) {
+        self.id = UUID()
+        self.title = title
+        self.estimatedMinutes = estimatedMinutes
+        self.isDone = false
+        self.order = order
+        self.origin = origin
+        self.parentTask = parentTask
     }
 }

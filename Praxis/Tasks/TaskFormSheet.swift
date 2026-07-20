@@ -7,6 +7,7 @@ import SwiftData
 /// Pierre can correct anything, including auto-imported tasks.
 struct TaskFormSheet: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
+    @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @Environment(\.dismiss) private var dismiss
 
     let existingTask: PraxisTask?
@@ -23,6 +24,8 @@ struct TaskFormSheet: View {
     @State private var waitingOn: String
     @State private var hasHorizonDate: Bool
     @State private var horizonDate: Date
+    @State private var isSubtaskProposalPresented = false
+    @State private var newSubtaskTitle: String = ""
 
     init(existingTask: PraxisTask?, availableCourses: [CourseOption]) {
         self.existingTask = existingTask
@@ -68,6 +71,11 @@ struct TaskFormSheet: View {
 
             typeSpecificFields
 
+            if let existingTask {
+                Divider()
+                subtasksSection(for: existingTask)
+            }
+
             if let existingTask, !existingTask.comments.isEmpty {
                 Divider()
                 Text("Commentaires").font(.caption).foregroundStyle(.secondary)
@@ -100,6 +108,102 @@ struct TaskFormSheet: View {
         }
         .padding()
         .frame(width: 420)
+        .sheet(isPresented: $isSubtaskProposalPresented) {
+            if let existingTask {
+                SubtaskProposalView(task: existingTask)
+                    .environmentObject(taskStore)
+                    .environmentObject(localLLM)
+            }
+        }
+    }
+
+    // MARK: - Sous-tâches
+
+    /// Only shown once the task already exists (`existingTask != nil`) — a brand-new,
+    /// not-yet-saved task has no `PraxisTask` row to attach subtasks to yet. Save the task
+    /// once, then reopen it to break it down.
+    private func subtasksSection(for task: PraxisTask) -> some View {
+        let subtasks = task.subtasks.sorted { $0.order < $1.order }
+        let remainingMinutes = subtasks.filter { !$0.isDone }.map(\.estimatedMinutes).reduce(0, +)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Sous-tâches").font(.caption).foregroundStyle(.secondary)
+                if !subtasks.isEmpty {
+                    Text("\(subtasks.filter(\.isDone).count)/\(subtasks.count) · \(remainingMinutes) min restantes")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button {
+                    isSubtaskProposalPresented = true
+                } label: {
+                    Label("Découper avec l'IA", systemImage: "sparkles")
+                }
+                .font(.caption)
+            }
+
+            ForEach(subtasks) { subtask in
+                HStack(spacing: 8) {
+                    Button {
+                        toggleSubtask(subtask)
+                    } label: {
+                        Image(systemName: subtask.isDone ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(subtask.isDone ? .green : .secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(subtask.title)
+                        .strikethrough(subtask.isDone)
+                        .foregroundStyle(subtask.isDone ? .secondary : .primary)
+                    Spacer()
+                    Text("\(subtask.estimatedMinutes) min")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        deleteSubtask(subtask, from: task)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .font(.callout)
+            }
+
+            HStack {
+                TextField("Ajouter une sous-tâche…", text: $newSubtaskTitle)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addManualSubtask(to: task) }
+                Button("Ajouter") { addManualSubtask(to: task) }
+                    .disabled(newSubtaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private func addManualSubtask(to task: PraxisTask) {
+        let trimmed = newSubtaskTitle.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let subtask = Subtask(
+            title: trimmed,
+            estimatedMinutes: 30,
+            order: task.subtasks.count,
+            origin: "manuel",
+            parentTask: task
+        )
+        taskStore.modelContext.insert(subtask)
+        taskStore.save()
+        newSubtaskTitle = ""
+    }
+
+    private func toggleSubtask(_ subtask: Subtask) {
+        subtask.isDone.toggle()
+        taskStore.save()
+    }
+
+    private func deleteSubtask(_ subtask: Subtask, from task: PraxisTask) {
+        taskStore.modelContext.delete(subtask)
+        taskStore.save()
     }
 
     @ViewBuilder

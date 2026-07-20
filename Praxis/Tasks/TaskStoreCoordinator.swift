@@ -13,7 +13,7 @@ final class TaskStoreCoordinator: ObservableObject {
     private var foregroundObserver: NSObjectProtocol?
 
     init() {
-        let schema = Schema([Course.self, PraxisTask.self, RevisionBlock.self, TaskComment.self])
+        let schema = Schema([Course.self, PraxisTask.self, RevisionBlock.self, TaskComment.self, Subtask.self])
         // Stored outside the vault, deliberately: this is Praxis's authoritative SwiftData
         // store (SQLite + WAL). Living inside the vault risks obsidian-livesync touching
         // the WAL file mid-write. The vault only ever receives explicit, on-demand exports

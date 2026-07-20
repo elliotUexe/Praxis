@@ -6,6 +6,7 @@ import AppKit
 /// type, with full edit access regardless of a task's origin (manual or auto-imported).
 struct TasksSectionView: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
+    @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @Query(sort: \PraxisTask.createdAt, order: .reverse) private var allTasks: [PraxisTask]
 
     @State private var availableCourses: [CourseOption] = []
@@ -28,10 +29,12 @@ struct TasksSectionView: View {
         .sheet(item: $editingTask) { task in
             TaskFormSheet(existingTask: task, availableCourses: availableCourses)
                 .environmentObject(taskStore)
+                .environmentObject(localLLM)
         }
         .sheet(isPresented: $isCreatingTask) {
             TaskFormSheet(existingTask: nil, availableCourses: availableCourses)
                 .environmentObject(taskStore)
+                .environmentObject(localLLM)
         }
     }
 
