@@ -7,6 +7,7 @@ import AppKit
 struct TasksSectionView: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @EnvironmentObject private var localLLM: LocalLLMCoordinator
+    @EnvironmentObject private var focusTimer: FocusTimerCoordinator
     @Query(sort: \PraxisTask.createdAt, order: .reverse) private var allTasks: [PraxisTask]
 
     @State private var availableCourses: [CourseOption] = []
@@ -30,11 +31,13 @@ struct TasksSectionView: View {
             TaskFormSheet(existingTask: task, availableCourses: availableCourses)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
+                .environmentObject(focusTimer)
         }
         .sheet(isPresented: $isCreatingTask) {
             TaskFormSheet(existingTask: nil, availableCourses: availableCourses)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
+                .environmentObject(focusTimer)
         }
     }
 

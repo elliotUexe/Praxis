@@ -8,6 +8,7 @@ import SwiftData
 struct TaskFormSheet: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @EnvironmentObject private var localLLM: LocalLLMCoordinator
+    @EnvironmentObject private var focusTimer: FocusTimerCoordinator
     @Environment(\.dismiss) private var dismiss
 
     let existingTask: PraxisTask?
@@ -26,6 +27,7 @@ struct TaskFormSheet: View {
     @State private var horizonDate: Date
     @State private var isSubtaskProposalPresented = false
     @State private var newSubtaskTitle: String = ""
+    @State private var focusTarget: FocusTarget?
 
     init(existingTask: PraxisTask?, availableCourses: [CourseOption]) {
         self.existingTask = existingTask
@@ -115,6 +117,18 @@ struct TaskFormSheet: View {
                     .environmentObject(localLLM)
             }
         }
+        .sheet(item: $focusTarget) { target in
+            FocusTimerView(task: target.task, subtask: target.subtask)
+                .environmentObject(focusTimer)
+                .environmentObject(taskStore)
+                .onDisappear { focusTimer.reset() }
+        }
+    }
+
+    private struct FocusTarget: Identifiable {
+        let id = UUID()
+        let task: PraxisTask?
+        let subtask: Subtask?
     }
 
     // MARK: - Sous-tâches
@@ -135,6 +149,12 @@ struct TaskFormSheet: View {
                         .foregroundStyle(.tertiary)
                 }
                 Spacer()
+                Button {
+                    focusTarget = FocusTarget(task: task, subtask: nil)
+                } label: {
+                    Label("Concentration", systemImage: "leaf")
+                }
+                .font(.caption)
                 Button {
                     isSubtaskProposalPresented = true
                 } label: {
@@ -160,6 +180,14 @@ struct TaskFormSheet: View {
                     Text("\(subtask.estimatedMinutes) min")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button {
+                        focusTarget = FocusTarget(task: nil, subtask: subtask)
+                    } label: {
+                        Image(systemName: "leaf")
+                            .foregroundStyle(Color.praxisAccent)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Démarrer une session de concentration sur cette sous-tâche")
                     Button {
                         deleteSubtask(subtask, from: task)
                     } label: {

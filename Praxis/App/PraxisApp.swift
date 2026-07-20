@@ -10,6 +10,7 @@ struct PraxisApp: App {
     @StateObject private var aiSummary = AISummaryCoordinator()
     @StateObject private var taskStore = TaskStoreCoordinator()
     @StateObject private var localLLM = LocalLLMCoordinator()
+    @StateObject private var focusTimer = FocusTimerCoordinator()
 
     var body: some Scene {
         WindowGroup("Praxis", id: "main") {
@@ -20,6 +21,7 @@ struct PraxisApp: App {
                 .environmentObject(aiSummary)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
+                .environmentObject(focusTimer)
                 .modelContainer(taskStore.modelContainer)
                 .tint(.praxisAccent)
         }

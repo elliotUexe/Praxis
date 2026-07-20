@@ -165,3 +165,30 @@ final class Subtask {
         self.parentTask = parentTask
     }
 }
+
+/// One concentration-timer run (15/25 min, Pomodoro-style), optionally tied to a task or a
+/// specific subtask — logged even when abandoned (`wasCompleted = false`) rather than
+/// discarded, so the record reflects what actually happened.
+@Model
+final class FocusSession {
+    @Attribute(.unique) var id: UUID
+    var startedAt: Date
+    var plannedDurationMinutes: Int
+    var completedAt: Date?
+    var wasCompleted: Bool
+    var linkedTask: PraxisTask?
+    var linkedSubtask: Subtask?
+
+    init(
+        plannedDurationMinutes: Int,
+        linkedTask: PraxisTask? = nil,
+        linkedSubtask: Subtask? = nil
+    ) {
+        self.id = UUID()
+        self.startedAt = Date()
+        self.plannedDurationMinutes = plannedDurationMinutes
+        self.wasCompleted = false
+        self.linkedTask = linkedTask
+        self.linkedSubtask = linkedSubtask
+    }
+}
