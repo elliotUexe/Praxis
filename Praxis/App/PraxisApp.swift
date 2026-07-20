@@ -21,6 +21,7 @@ struct PraxisApp: App {
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
                 .modelContainer(taskStore.modelContainer)
+                .tint(.praxisAccent)
         }
 
         MenuBarExtra {
@@ -28,17 +29,37 @@ struct PraxisApp: App {
                 .environmentObject(session)
                 .environmentObject(transcription)
         } label: {
-            Image(systemName: menuBarSymbol)
+            MenuBarIconLabel(recordingState: session.recordingState)
         }
         .menuBarExtraStyle(.window)
     }
+}
 
-    private var menuBarSymbol: String {
-        switch session.recordingState {
-        case .idle: return "waveform"
-        case .recording: return "waveform.circle.fill"
-        case .paused: return "pause.circle"
-        case .transcribing: return "arrow.triangle.2.circlepath"
+/// The Praxis "P" mark (template image, auto-tints for light/dark menu bar) with a small
+/// status dot layered on top — keeps the brand glyph constant instead of swapping it out
+/// for a different SF Symbol per state, while still surfacing recording status at a glance.
+private struct MenuBarIconLabel: View {
+    let recordingState: RecordingState
+
+    var body: some View {
+        Image("MenuBarIcon")
+            .renderingMode(.template)
+            .overlay(alignment: .bottomTrailing) {
+                if let color = statusColor {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: 2)
+                }
+            }
+    }
+
+    private var statusColor: Color? {
+        switch recordingState {
+        case .idle: return nil
+        case .recording: return .red
+        case .paused: return .orange
+        case .transcribing: return .praxisAccent
         }
     }
 }

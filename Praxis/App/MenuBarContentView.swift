@@ -8,8 +8,13 @@ struct MenuBarContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Praxis")
-                .font(.headline)
+            HStack(spacing: 6) {
+                Image("MenuBarIcon")
+                    .renderingMode(.template)
+                    .foregroundStyle(Color.praxisAccent)
+                Text("Praxis")
+                    .font(.headline)
+            }
 
             Text(statusLabel)
                 .font(.subheadline)
@@ -24,7 +29,7 @@ struct MenuBarContentView: View {
 
             Divider()
 
-            HStack {
+            HStack(spacing: 8) {
                 Button(session.recordingState == .idle ? "Démarrer" : "Arrêter") {
                     if session.recordingState == .idle {
                         Task {
@@ -36,6 +41,8 @@ struct MenuBarContentView: View {
                         Task { await transcription.stop() }
                     }
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.praxisAccent)
                 .disabled(!transcription.isReady && session.recordingState == .idle)
 
                 Button(session.recordingState == .paused ? "Reprendre" : "Pause") {
@@ -47,19 +54,27 @@ struct MenuBarContentView: View {
                         transcription.pause()
                     }
                 }
+                .buttonStyle(.bordered)
                 .disabled(session.recordingState == .idle)
             }
 
             Divider()
 
-            Button("Ouvrir Praxis") {
+            Button {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Text("Ouvrir Praxis")
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.bordered)
 
             Button("Quitter Praxis") {
                 NSApp.terminate(nil)
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .font(.caption)
         }
         .padding(12)
         .frame(width: 260)
