@@ -22,7 +22,7 @@ struct SummariesSectionView: View {
 
             if usingFallback {
                 if localLLM.isUserDisabled {
-                    Text("IA locale désactivée (case à cocher dans Enregistrement) — aucune clé API payante configurée non plus, donc aucun résumé ne sera généré.")
+                    Text("IA locale désactivée (dans Réglages) — aucune clé API payante configurée non plus, donc aucun résumé ne sera généré.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 } else {
@@ -39,7 +39,7 @@ struct SummariesSectionView: View {
                 .disabled(localLLM.isUserDisabled)
 
                 if localLLM.isUserDisabled {
-                    Text("IA locale désactivée (case à cocher dans Enregistrement).")
+                    Text("IA locale désactivée (dans Réglages).")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 } else if localLLM.isEnabled {

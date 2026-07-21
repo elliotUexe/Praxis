@@ -23,7 +23,7 @@ struct SubtaskProposalView: View {
             Text(task.title).font(.subheadline).foregroundStyle(.secondary)
 
             if localLLM.isUserDisabled {
-                Text("IA locale désactivée (case à cocher dans Enregistrement) — réactivez-la pour générer une proposition.")
+                Text("IA locale désactivée (dans Réglages) — réactivez-la pour générer une proposition.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else if localLLM.isProposingSubtasks {

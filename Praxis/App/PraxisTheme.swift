@@ -8,6 +8,32 @@ extension Color {
     static let praxisNavy = Color(red: 0x18 / 255, green: 0x28 / 255, blue: 0x36 / 255)     // #182836
 }
 
+/// Explicit user-forced appearance (Réglages) — per the design handoff, "Auto" follows
+/// the system (`NSApp.effectiveAppearance`), but once Pierre picks Clair/Sombre explicitly
+/// that choice must win regardless of what the system is set to. `.preferredColorScheme`
+/// with `nil` for `.auto` is exactly "don't override, follow the system."
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case auto, clair, sombre
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .auto: return "Auto"
+        case .clair: return "Clair"
+        case .sombre: return "Sombre"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .auto: return nil
+        case .clair: return .light
+        case .sombre: return .dark
+        }
+    }
+}
+
 extension TaskType {
     /// Centralizes the per-type colors that used to be scattered as ad hoc system Colors
     /// in `TaskRowView.typeIcon` (`.red`/`.blue`/`.indigo`/`.orange.opacity(0.7)`/`.gray`)

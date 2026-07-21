@@ -11,11 +11,17 @@ struct AccueilSectionView: View {
     @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @EnvironmentObject private var focusTimer: FocusTimerCoordinator
 
+    /// Tapping a "Presse" card sends Pierre to the Tâches section (per his explicit ask)
+    /// — a direct binding to `ContentView`'s sidebar selection rather than any indirect
+    /// navigation mechanism.
+    @Binding var selectedSection: AppSection?
+
     @Query(filter: #Predicate<PraxisTask> { !$0.isDone && !$0.isRejected }, sort: \PraxisTask.dueDate)
     private var openTasks: [PraxisTask]
 
     @State private var isTriagePresented = false
     @State private var courseForQuestion: CourseSummary?
+    @State private var editingTask: PraxisTask?
 
     var body: some View {
         ScrollView {
@@ -52,28 +58,42 @@ struct AccueilSectionView: View {
             CourseQuestionView(courseVaultPath: course.vaultPath, displayName: course.displayName)
                 .environmentObject(localLLM)
         }
+        .sheet(item: $editingTask) { task in
+            TaskFormSheet(existingTask: task, availableCourses: CourseDirectoryScanner.scan())
+                .environmentObject(taskStore)
+                .environmentObject(localLLM)
+                .environmentObject(focusTimer)
+        }
     }
 
     private var pressingSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Presse").font(.caption).foregroundStyle(.secondary)
             ForEach(pressingTasks) { task in
-                HStack {
-                    Text(task.title).font(.callout)
-                    Spacer()
-                    if let due = task.dueDate {
-                        Text(dueLabel(due))
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.red)
+                Button {
+                    // Sends Pierre to Tâches per his explicit ask, while also opening the
+                    // task directly rather than leaving him to find it in the full list.
+                    selectedSection = .tasks
+                    editingTask = task
+                } label: {
+                    HStack {
+                        Text(task.title).font(.callout)
+                        Spacer()
+                        if let due = task.dueDate {
+                            Text(dueLabel(due))
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundStyle(.red)
+                        }
                     }
+                    .padding(10)
+                    .background(Color.red.opacity(0.08))
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(Color.red).frame(width: 3)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
-                .padding(10)
-                .background(Color.red.opacity(0.08))
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(Color.red).frame(width: 3)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .buttonStyle(.plain)
             }
         }
     }
@@ -206,7 +226,7 @@ private struct CourseQuestionView: View {
             }
 
             if localLLM.isUserDisabled {
-                Text("IA locale désactivée (case à cocher dans Enregistrement).")
+                Text("IA locale désactivée (dans Réglages).")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }

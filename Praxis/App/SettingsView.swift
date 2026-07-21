@@ -13,6 +13,8 @@ struct SettingsView: View {
     @State private var testResult: String?
     @State private var isTesting = false
 
+    @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
+
     var body: some View {
         VStack(spacing: 0) {
             TabView {
@@ -24,7 +26,7 @@ struct SettingsView: View {
                     .tabItem { Label("À propos", systemImage: "info.circle") }
             }
             .padding(20)
-            .frame(width: 380, height: 360)
+            .frame(width: 380, height: 440)
 
             Divider()
             HStack {
@@ -70,9 +72,39 @@ struct SettingsView: View {
 
             Divider()
 
+            localLLMEnableSection
             localModelSection
 
+            Divider()
+
+            appearanceSection
+
             Spacer(minLength: 0)
+        }
+    }
+
+    /// A standalone control — distinct from `localModelSection` (Rapide/Qualité, a
+    /// different setting) and from the read-only status badge in `RecordingSectionView`,
+    /// which no longer has an interactive toggle of its own per the design handoff
+    /// ("pas une Toggle SwiftUI pleine largeur ... la vraie bascule reste dans Réglages").
+    private var localLLMEnableSection: some View {
+        Toggle("IA locale activée", isOn: Binding(
+            get: { !localLLM.isUserDisabled },
+            set: { localLLM.isUserDisabled = !$0 }
+        ))
+        .font(.callout)
+    }
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Apparence").font(.caption).foregroundStyle(.secondary)
+            Picker("Apparence", selection: $appearanceRaw) {
+                ForEach(AppAppearance.allCases) { appearance in
+                    Text(appearance.displayName).tag(appearance.rawValue)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
         }
     }
 

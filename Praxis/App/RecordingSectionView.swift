@@ -35,7 +35,7 @@ struct RecordingSectionView: View {
             }
 
             courseDestinationRow
-            localLLMToggleRow
+            localLLMStatusBadge
 
             if let currentURL = session.currentRecordingURL {
                 Text(currentURL.lastPathComponent)
@@ -237,22 +237,32 @@ struct RecordingSectionView: View {
         }
     }
 
-    /// Master on/off checkbox for the local model — off frees its ~4 Go de mémoire
-    /// immédiatement et bloque le repli automatique vers Qwen en l'absence de clé API :
-    /// la transcription continue normalement, seules les fonctions IA sont coupées.
-    private var localLLMToggleRow: some View {
+    /// Read-only status badge, not an interactive control — per the design handoff, the
+    /// real on/off switch lives in Réglages (`SettingsView.localLLMEnableSection`) as its
+    /// own standalone button, distinct from this recording-view status indicator.
+    private var localLLMStatusBadge: some View {
         HStack(spacing: 4) {
-            Toggle("IA locale (Qwen)", isOn: Binding(
-                get: { !localLLM.isUserDisabled },
-                set: { localLLM.isUserDisabled = !$0 }
-            ))
-            .toggleStyle(.checkbox)
-            .font(.caption)
-
-            Text(localLLM.isModelLoaded ? "· en mémoire" : localLLM.isLoadingModel ? "· chargement…" : "· déchargée")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            Circle()
+                .fill(localLLMStatusColor)
+                .frame(width: 6, height: 6)
+            Text("IA locale \(localLLMStatusText)")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
         }
+    }
+
+    private var localLLMStatusText: String {
+        if localLLM.isUserDisabled { return "désactivée" }
+        if localLLM.isModelLoaded { return "en mémoire" }
+        if localLLM.isLoadingModel { return "chargement…" }
+        return "déchargée"
+    }
+
+    private var localLLMStatusColor: Color {
+        if localLLM.isUserDisabled { return .gray }
+        if localLLM.isModelLoaded { return .green }
+        if localLLM.isLoadingModel { return .orange }
+        return .secondary
     }
 
     private var transcriptionScrollView: some View {
