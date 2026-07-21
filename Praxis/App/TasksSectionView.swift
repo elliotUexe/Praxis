@@ -8,12 +8,19 @@ struct TasksSectionView: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @EnvironmentObject private var focusTimer: FocusTimerCoordinator
-    @Query(sort: \PraxisTask.createdAt, order: .reverse) private var allTasks: [PraxisTask]
+    @Query(filter: #Predicate<PraxisTask> { !$0.isRejected }, sort: \PraxisTask.createdAt, order: .reverse)
+    private var allTasks: [PraxisTask]
+    @Query(filter: #Predicate<PraxisTask> { $0.isRejected }, sort: \PraxisTask.updatedAt, order: .reverse)
+    private var rejectedTasks: [PraxisTask]
+    @State private var isRejectedTasksPresented = false
 
     @State private var availableCourses: [CourseOption] = []
     @State private var editingTask: PraxisTask?
     @State private var isCreatingTask = false
+    @State private var isTriagePresented = false
     @State private var pasteText: String = ""
+
+    private var needsReviewCount: Int { allTasks.filter { $0.needsReview && !$0.isDone }.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -39,12 +46,38 @@ struct TasksSectionView: View {
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)
         }
+        .sheet(isPresented: $isTriagePresented) {
+            TaskTriageView()
+                .environmentObject(taskStore)
+                .environmentObject(localLLM)
+                .environmentObject(focusTimer)
+        }
+        .sheet(isPresented: $isRejectedTasksPresented) {
+            RejectedTasksView(rejectedTasks: rejectedTasks)
+                .environmentObject(taskStore)
+        }
     }
 
     private var header: some View {
         HStack {
             Text("Tâches").font(.title3)
             Spacer()
+            if needsReviewCount > 0 {
+                Button {
+                    isTriagePresented = true
+                } label: {
+                    Label("Trier (\(needsReviewCount))", systemImage: "checklist")
+                }
+            }
+            if !rejectedTasks.isEmpty {
+                Button {
+                    isRejectedTasksPresented = true
+                } label: {
+                    Label("Rejetées (\(rejectedTasks.count))", systemImage: "archivebox")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
             Button {
                 taskStore.scanPendingImports()
             } label: {
@@ -132,10 +165,26 @@ struct TasksSectionView: View {
     private func createFromPastedText() {
         let trimmed = pasteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let task = PraxisTask(title: trimmed, type: .anticipation, origin: "manuel")
+        let task = PraxisTask(title: trimmed, type: Self.detectType(from: trimmed), origin: "manuel")
         taskStore.modelContext.insert(task)
         taskStore.save()
         pasteText = ""
+    }
+
+    /// Simple keyword heuristic, not an LLM call (pasted text creates a task instantly,
+    /// no local-model round-trip) — good enough to avoid every quick paste defaulting to
+    /// "Anticipation" when it's obviously a deadline or an exam to revise for.
+    private static func detectType(from text: String) -> TaskType {
+        let normalized = text.lowercased().folding(options: .diacriticInsensitive, locale: .current)
+        let dsKeywords = ["ds ", " ds", "examen", "controle", "partiel"]
+        if dsKeywords.contains(where: normalized.contains) {
+            return .revisionDS
+        }
+        let renduKeywords = ["rendre", "rendu", "deadline", "a rendre", "date limite", "avant le"]
+        if renduKeywords.contains(where: normalized.contains) {
+            return .rendu
+        }
+        return .anticipation
     }
 
     private var taskListByType: some View {

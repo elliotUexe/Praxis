@@ -48,21 +48,9 @@ struct TaskRowView: View {
     }
 
     private var typeIcon: some View {
-        Group {
-            switch task.type {
-            case .rendu:
-                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
-            case .revisionFond:
-                Image(systemName: "book.fill").foregroundStyle(.blue)
-            case .revisionDS:
-                Image(systemName: "book.closed.fill").foregroundStyle(Color.indigo)
-            case .blocage:
-                Image(systemName: "exclamationmark.octagon.fill").foregroundStyle(Color.orange.opacity(0.7))
-            case .anticipation:
-                Image(systemName: "clock.fill").foregroundStyle(.gray)
-            }
-        }
-        .font(.caption)
+        Image(systemName: task.type.iconName)
+            .foregroundStyle(task.type.color)
+            .font(.caption)
     }
 
     @ViewBuilder

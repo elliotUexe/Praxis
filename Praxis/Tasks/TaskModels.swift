@@ -47,6 +47,12 @@ final class PraxisTask {
     var origin: String                   // "manuel" | "llm_local" | "skill_externe"
     var isDone: Bool
     var needsReview: Bool                // auto-extracted, not yet reviewed — a visual filter, never an edit lock
+    /// Set by "Rejeter" in the triage queue (`TaskTriageView`) — archives the task out of
+    /// every default list/query without deleting it. Only surfaced again via the
+    /// "Tâches rejetées" modal, which can restore it (clears this flag) or delete it for
+    /// good. Declared with an inline default so SwiftData lightweight-migrates existing
+    /// rows to `false` automatically.
+    var isRejected: Bool = false
     var createdAt: Date
     var updatedAt: Date
     var completedAt: Date?

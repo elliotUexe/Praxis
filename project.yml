@@ -16,6 +16,13 @@ packages:
     # (DType.greatestFiniteMagnitudeArray missing) that isn't present in this revision,
     # the one actually verified building locally. Bump deliberately, not by drifting.
     revision: 2c1dd13d41586f63f40ba9ce45ce201026ab52b0
+  # Was only a transitive dependency of MLXSwiftLM until here — declared explicitly to
+  # import the `MLX` product directly (Memory.cacheLimit, for the GPU cache cap in
+  # LocalLLMCoordinator). Pinned to the exact version already resolved transitively
+  # (Package.resolved) so this doesn't trigger a divergent re-resolution.
+  MLXSwift:
+    url: https://github.com/ml-explore/mlx-swift
+    exactVersion: 0.31.6
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.0.0
@@ -72,6 +79,8 @@ targets:
         product: MLXLMCommon
       - package: MLXSwiftLM
         product: MLXHuggingFace
+      - package: MLXSwift
+        product: MLX
       - package: SwiftTransformers
         product: Tokenizers
       - package: SwiftHuggingFace

@@ -32,6 +32,8 @@ struct PraxisApp: App {
             MenuBarContentView()
                 .environmentObject(session)
                 .environmentObject(transcription)
+                .environmentObject(taskStore)
+                .modelContainer(taskStore.modelContainer)
         } label: {
             MenuBarIconLabel(recordingState: session.recordingState)
         }

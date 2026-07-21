@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import MLXLMCommon
 import MLXLLM
 import MLXHuggingFace
@@ -7,6 +8,31 @@ import MLXHuggingFace
 // macro implementation in MLXHuggingFaceMacros/HuggingFaceIntegrationMacros.swift).
 import HuggingFace
 import Tokenizers
+
+/// The two local models Pierre can pick between in Réglages — "Rapide" trades quality
+/// for latency on the live 45s cycle (summary + extraction) and subtask breakdowns,
+/// which were both too slow in real use on an M4 Pro. `qwen3_4b_4bit` is used as-is from
+/// `LLMRegistry` rather than a custom `ModelConfiguration` — it's already vetted by
+/// mlx-swift-lm, no risk of a typo'd Hugging Face id.
+enum LocalModelChoice: String, CaseIterable, Identifiable {
+    case rapide, qualite
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .rapide: return "Rapide (Qwen3-4B)"
+        case .qualite: return "Qualité (Qwen2.5-7B)"
+        }
+    }
+
+    var configuration: ModelConfiguration {
+        switch self {
+        case .rapide: return LLMRegistry.qwen3_4b_4bit
+        case .qualite: return LLMRegistry.qwen2_5_7b
+        }
+    }
+}
 
 /// Phase 5 (Praxis MVP): on-device task extraction + rolling summary, running Qwen2.5-7B-
 /// Instruct-4bit via mlx-swift-lm — no metered API call, per Pierre's explicit preference.
@@ -27,6 +53,16 @@ final class LocalLLMCoordinator: ObservableObject {
         didSet {
             guard isUserDisabled != oldValue, isUserDisabled else { return }
             isEnabled = false
+            unload()
+        }
+    }
+    /// Persisted across launches (`UserDefaults`, not the app bundle — survives updates).
+    /// Changing it while a model is loaded unloads immediately; the next actual use
+    /// reloads with the new choice via `prepareIfNeeded()`.
+    @Published var selectedModel: LocalModelChoice = LocalLLMCoordinator.loadSelectedModel() {
+        didSet {
+            guard selectedModel != oldValue else { return }
+            UserDefaults.standard.set(selectedModel.rawValue, forKey: Self.selectedModelDefaultsKey)
             unload()
         }
     }
@@ -66,8 +102,26 @@ final class LocalLLMCoordinator: ObservableObject {
         GenerateParameters(maxTokens: maxTokens, temperature: 0.3, repetitionPenalty: 1.15)
     }
 
+    /// Qwen3 (the "Rapide" model) reasons in a `<think>…</think>` block before every
+    /// answer by default — measured via `PraxisLLMBench`: 6.9s to generate a 4-line JSON
+    /// answer, almost double Qwen2.5-7B's 3.7s despite being a smaller model, because most
+    /// of the token budget went to unused reasoning. Appending `/no_think` (Qwen3's own
+    /// convention) drops that to 1.6s with an empty think block. Qwen2.5 has no notion of
+    /// this token, so it's only appended for `.rapide` to avoid adding stray noise to
+    /// Qwen2.5 prompts.
+    private func promptSuppressingThinking(_ prompt: String) -> String {
+        guard selectedModel == .rapide else { return prompt }
+        return prompt + "\n/no_think"
+    }
+
     private var timer: Timer?
     private var lastProcessedLength = 0
+    /// Counts `processNewText` passes that actually ran (not skipped ticks) — drives the
+    /// extraction-every-tick / summary-every-other-tick alternation.
+    private var tickCount = 0
+    /// Text from ticks where the summary was skipped, folded into the next summary call
+    /// so alternating passes doesn't silently drop content from the rolling summary.
+    private var pendingSummaryDelta = ""
     private var transcriptProvider: (() -> String)?
     private weak var taskStore: TaskStoreCoordinator?
     private var currentCourseVaultPath: String?
@@ -91,6 +145,13 @@ final class LocalLLMCoordinator: ObservableObject {
         isModelLoaded = false
     }
 
+    private static let selectedModelDefaultsKey = "localLLMSelectedModel"
+
+    private static func loadSelectedModel() -> LocalModelChoice {
+        UserDefaults.standard.string(forKey: selectedModelDefaultsKey)
+            .flatMap(LocalModelChoice.init(rawValue:)) ?? .rapide
+    }
+
     /// Loads the model on first use (one-time multi-GB download, cached by MLX after
     /// that). Safe to call repeatedly — no-ops once loaded or while already loading.
     func prepareIfNeeded() async {
@@ -101,10 +162,14 @@ final class LocalLLMCoordinator: ObservableObject {
             // A freestanding macro from MLXHuggingFace (Macros.swift) — not MLXLMCommon.
             // Verified directly against the package source after the id-only free function
             // turned out to need an explicit downloader/tokenizerLoader after all.
-            let container = try await #huggingFaceLoadModelContainer(configuration: LLMRegistry.qwen2_5_7b)
+            let container = try await #huggingFaceLoadModelContainer(configuration: selectedModel.configuration)
             modelContainer = container
             chatSession = ChatSession(container)
             isModelLoaded = true
+            // Caps MLX's recycled-buffer cache so it doesn't balloon toward swap during a
+            // long live session running alongside WhisperKit — measured need on M4 Pro
+            // 24 Go, not a hard requirement of the API itself.
+            MLX.Memory.cacheLimit = 2 * 1024 * 1024 * 1024
         } catch {
             lastError = "Impossible de charger le modèle local (Qwen2.5-7B) : \(error.localizedDescription)"
         }
@@ -128,6 +193,8 @@ final class LocalLLMCoordinator: ObservableObject {
         self.transcriptProvider = transcriptProvider
         rollingSummaryMarkdown = ""
         lastProcessedLength = 0
+        tickCount = 0
+        pendingSummaryDelta = ""
         Task { await prepareIfNeeded() }
         restartTimer()
     }
@@ -159,7 +226,7 @@ final class LocalLLMCoordinator: ObservableObject {
             """
             await chatSession.clear()
             chatSession.generateParameters = Self.generateParameters(maxTokens: 500)
-            guard let response = try? await chatSession.respond(to: prompt) else { return }
+            guard let response = try? await chatSession.respond(to: promptSuppressingThinking(prompt)) else { return }
             answerMarkdown = response.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
@@ -200,7 +267,16 @@ final class LocalLLMCoordinator: ObservableObject {
     }
 
     private func processNewText() async {
-        guard isEnabled, let transcript = transcriptProvider?(), transcript.count > lastProcessedLength else { return }
+        // `isProcessing` must be claimed before anything else, including reading the
+        // transcript — a pass that runs past the next 45s tick previously let a second
+        // tick slip through everything up to `await prepareIfNeeded()` (itself a no-op
+        // once loaded) and start a second concurrent `respond()` on the same shared
+        // `chatSession`, racing its `generateParameters` against the first call's. A tick
+        // that bails here touches nothing, so its text is simply picked up next tick.
+        guard isEnabled, !isProcessing, let transcript = transcriptProvider?(), transcript.count > lastProcessedLength else { return }
+        isProcessing = true
+        defer { isProcessing = false }
+
         let delta = String(transcript.dropFirst(lastProcessedLength))
         lastProcessedLength = transcript.count
         guard delta.trimmingCharacters(in: .whitespacesAndNewlines).count > 20 else { return }
@@ -208,20 +284,35 @@ final class LocalLLMCoordinator: ObservableObject {
         await prepareIfNeeded()
         guard isModelLoaded else { return }
 
-        isProcessing = true
-        defer { isProcessing = false }
+        tickCount += 1
+        pendingSummaryDelta += delta
 
         await extractAndInsertTasks(delta: delta)
-        await updateSummary(delta: delta)
+        // Extraction runs every tick (real-time value); the summary rewrite is the
+        // expensive call (re-embeds + regenerates the whole rolling summary), so it only
+        // runs every other tick. `pendingSummaryDelta` accumulates the skipped tick's text
+        // so nothing is missing from the summary once it does run.
+        if tickCount.isMultiple(of: 2) {
+            await updateSummary(delta: pendingSummaryDelta)
+            pendingSummaryDelta = ""
+        }
     }
 
     private func updateSummary(delta: String) async {
         guard let chatSession else { return }
         let courseContext = currentCourseVaultPath.map { " de \(VaultPaths.courseDisplayName(fromVaultPath: $0))" } ?? ""
+        // Capped to the last ~4000 chars: the full summary re-embedded every call was
+        // both slow (bigger prompt to prefill every pass) and unbounded as a session goes
+        // on. A long session's early content still lives in the exported Markdown, just
+        // not necessarily reflected verbatim after enough later passes have trimmed it.
+        let existingSummary = rollingSummaryMarkdown.isEmpty ? "(vide)" : String(rollingSummaryMarkdown.suffix(4000))
+        let truncationNote = rollingSummaryMarkdown.count > 4000
+            ? " (début tronqué, poursuis dans la continuité de ce qui suit)"
+            : ""
         let prompt = """
-        Tu résumes un cours\(courseContext) en direct, en français, de façon concise (style note de cours, pas de blabla). Voici le résumé jusqu'ici :
+        Tu résumes un cours\(courseContext) en direct, en français, de façon concise (style note de cours, pas de blabla). Voici le résumé jusqu'ici\(truncationNote) :
         ---
-        \(rollingSummaryMarkdown.isEmpty ? "(vide)" : rollingSummaryMarkdown)
+        \(existingSummary)
         ---
         Nouveau passage transcrit à intégrer :
         ---
@@ -230,8 +321,8 @@ final class LocalLLMCoordinator: ObservableObject {
         Réponds UNIQUEMENT avec le résumé mis à jour dans son ensemble, sans préambule ni commentaire.
         """
         await chatSession.clear()
-        chatSession.generateParameters = Self.generateParameters(maxTokens: 1200)
-        guard let response = try? await chatSession.respond(to: prompt) else { return }
+        chatSession.generateParameters = Self.generateParameters(maxTokens: 800)
+        guard let response = try? await chatSession.respond(to: promptSuppressingThinking(prompt)) else { return }
         rollingSummaryMarkdown = response.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -241,7 +332,7 @@ final class LocalLLMCoordinator: ObservableObject {
         let prompt = Self.extractionPrompt(for: delta, courseName: courseName)
         await chatSession.clear()
         chatSession.generateParameters = Self.generateParameters(maxTokens: 500)
-        guard let response = try? await chatSession.respond(to: prompt),
+        guard let response = try? await chatSession.respond(to: promptSuppressingThinking(prompt)),
               let candidates = Self.parseCandidates(from: response),
               !candidates.isEmpty else { return }
 
@@ -293,7 +384,7 @@ final class LocalLLMCoordinator: ObservableObject {
         )
         await chatSession.clear()
         chatSession.generateParameters = Self.generateParameters(maxTokens: 600)
-        guard let response = try? await chatSession.respond(to: prompt),
+        guard let response = try? await chatSession.respond(to: promptSuppressingThinking(prompt)),
               let raw = Self.parseSubtaskProposals(from: response) else { return [] }
         return raw.map { ProposedSubtask(title: $0.title, estimatedMinutes: $0.estimatedMinutes) }
     }
@@ -412,6 +503,113 @@ final class LocalLLMCoordinator: ObservableObject {
         }
         if !current.isEmpty { chunks.append(current.joined(separator: "\n")) }
         return chunks
+    }
+
+    // MARK: - Q&A on an existing course (no live session required)
+
+    /// Answers a question against a course's saved transcripts/summaries — unlike
+    /// `askQuestion()`, which only works during a live recording (bound to
+    /// `transcriptProvider`), this reads whatever's already on disk for the course. No
+    /// embeddings for this pass: chunks each document, scores chunks by normalized term
+    /// overlap with the question, feeds the model only the best-scoring chunks up to a
+    /// character budget — cheap and good enough for a single course folder's worth of text.
+    func askCourseQuestion(courseVaultPath: String, question: String) async -> String? {
+        guard !isUserDisabled, !question.isEmpty else { return nil }
+        await prepareIfNeeded()
+        guard let chatSession else { return nil }
+
+        let documents = Self.collectCourseDocuments(courseVaultPath: courseVaultPath)
+        guard !documents.isEmpty else {
+            return "Aucun fichier de cours trouvé (Transcriptions/ ou Resumes/ vides ou absents)."
+        }
+
+        let scoredChunks = documents
+            .flatMap { document in
+                Self.chunk(document.text, maxWords: 500).map { (fileName: document.fileName, text: $0) }
+            }
+            .map { chunk in (chunk: chunk, score: Self.termOverlapScore(chunk: chunk.text, question: question)) }
+            .filter { $0.score > 0 }
+            .sorted { $0.score > $1.score }
+
+        guard !scoredChunks.isEmpty else {
+            return "Aucun passage pertinent trouvé pour cette question dans les fichiers de ce cours."
+        }
+
+        var budget = 8000
+        var selected: [(fileName: String, text: String)] = []
+        for scored in scoredChunks {
+            guard budget > 0 else { break }
+            selected.append(scored.chunk)
+            budget -= scored.chunk.text.count
+        }
+
+        let excerptsText = selected
+            .map { "[\($0.fileName)]\n\($0.text)" }
+            .joined(separator: "\n---\n")
+
+        let prompt = """
+        Tu réponds à une question sur un cours à partir d'extraits de fichiers réels (transcriptions ou résumés). Utilise uniquement ces extraits, cite entre crochets le(s) nom(s) de fichier dont provient l'information dans ta réponse.
+
+        Extraits :
+        ---
+        \(excerptsText)
+        ---
+
+        Question : \(question)
+        Réponds en français, en Markdown, de façon concise et factuelle.
+        """
+
+        await chatSession.clear()
+        chatSession.generateParameters = Self.generateParameters(maxTokens: 600)
+        guard let response = try? await chatSession.respond(to: promptSuppressingThinking(prompt)) else { return nil }
+        return response.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private struct CourseDocument {
+        let fileName: String
+        let text: String
+    }
+
+    /// Reads `.md`/`.txt` files under `Transcriptions/` and `Resumes/`, falling back to
+    /// the course root if both are absent/empty — an unreadable file is skipped, not fatal
+    /// to the rest of the question.
+    private static func collectCourseDocuments(courseVaultPath: String) -> [CourseDocument] {
+        let courseRoot = VaultPaths.root.appendingPathComponent(courseVaultPath)
+        let subfolders = ["Transcriptions", "Resumes"].map { courseRoot.appendingPathComponent($0) }
+        var searchRoots = subfolders.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if searchRoots.isEmpty { searchRoots = [courseRoot] }
+
+        var documents: [CourseDocument] = []
+        for root in searchRoots {
+            guard let entries = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { continue }
+            for url in entries {
+                guard ["md", "txt"].contains(url.pathExtension.lowercased()),
+                      let text = try? String(contentsOf: url, encoding: .utf8),
+                      !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                documents.append(CourseDocument(fileName: url.lastPathComponent, text: text))
+            }
+        }
+        return documents
+    }
+
+    /// Small hardcoded French stopword list + accent/case folding (same folding used
+    /// elsewhere in the app, e.g. `TasksSectionView.slug`) — no embeddings for this MVP
+    /// pass, just normalized term overlap between the question and each chunk.
+    private static let frenchStopwords: Set<String> = [
+        "le", "la", "les", "de", "des", "du", "un", "une", "et", "ou", "que", "qui", "dans",
+        "pour", "avec", "sur", "est", "sont", "ce", "cette", "ces", "a", "au", "aux", "en",
+        "il", "elle", "on", "nous", "vous", "ils", "elles", "je", "tu", "se", "son", "sa",
+        "ses", "mais", "donc", "or", "ni", "car", "quoi", "comment", "quand", "pourquoi"
+    ]
+
+    private static func normalizedTerms(_ text: String) -> Set<String> {
+        let normalized = text.lowercased().folding(options: .diacriticInsensitive, locale: .current)
+        let words = normalized.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        return Set(words.filter { !frenchStopwords.contains($0) && $0.count > 1 })
+    }
+
+    private static func termOverlapScore(chunk: String, question: String) -> Int {
+        normalizedTerms(chunk).intersection(normalizedTerms(question)).count
     }
 }
 

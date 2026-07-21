@@ -1,10 +1,16 @@
 import SwiftUI
+import SwiftData
 import AppKit
 
 struct MenuBarContentView: View {
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var transcription: LiveTranscriptionCoordinator
     @Environment(\.openWindow) private var openWindow
+
+    @Query(filter: #Predicate<PraxisTask> { $0.needsReview && !$0.isDone })
+    private var needsReviewTasks: [PraxisTask]
+    @Query(filter: #Predicate<PraxisTask> { $0.dueDate != nil && !$0.isDone })
+    private var upcomingDueTasks: [PraxisTask]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -19,6 +25,12 @@ struct MenuBarContentView: View {
             Text(statusLabel)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+
+            if !contextLine.isEmpty {
+                Text(contextLine)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+            }
 
             if !session.lastTranscriptSnippet.isEmpty {
                 Text(session.lastTranscriptSnippet)
@@ -92,5 +104,21 @@ struct MenuBarContentView: View {
     private var formattedElapsed: String {
         let total = Int(session.elapsedSeconds)
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    /// "N rendus < 5 jours · M à trier" — the "qui presse" context the design handoff
+    /// asks for, without growing the popover's fixed 260px width.
+    private var contextLine: String {
+        let cutoff = Calendar.current.date(byAdding: .day, value: 5, to: Date()) ?? Date()
+        let pressingCount = upcomingDueTasks.filter { $0.type == .rendu && ($0.dueDate ?? .distantFuture) <= cutoff }.count
+
+        var parts: [String] = []
+        if pressingCount > 0 {
+            parts.append("\(pressingCount) rendu\(pressingCount > 1 ? "s" : "") < 5 jours")
+        }
+        if !needsReviewTasks.isEmpty {
+            parts.append("\(needsReviewTasks.count) à trier")
+        }
+        return parts.joined(separator: " · ")
     }
 }

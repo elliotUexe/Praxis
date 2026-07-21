@@ -14,6 +14,12 @@ struct RecordingSectionView: View {
 
     @State private var isFileImporterPresented = false
     @State private var isDropTargeted = false
+    @State private var selectedTab: RecordingTab = .transcription
+
+    private enum RecordingTab: String, CaseIterable {
+        case transcription = "Transcription"
+        case resume = "Résumé"
+    }
 
     var body: some View {
         VStack(spacing: 12) {
@@ -21,8 +27,12 @@ struct RecordingSectionView: View {
                 .font(.system(size: 32))
             Text("Praxis")
                 .font(.title2)
-            Text(statusLabel)
+            Text(stateLabel)
                 .foregroundStyle(.secondary)
+
+            if session.recordingState == .recording || session.recordingState == .paused {
+                chronoView
+            }
 
             courseDestinationRow
             localLLMToggleRow
@@ -94,32 +104,26 @@ struct RecordingSectionView: View {
                     .font(.caption)
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(transcription.displaySegments) { segment in
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(segment.text)
-                                .foregroundStyle(.primary)
-                            if !segment.isRefined {
-                                Image(systemName: "ellipsis.circle")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                                    .help("En attente de raffinement")
-                            }
-                        }
-                    }
-                    if !transcription.unconfirmedText.isEmpty {
-                        Text(transcription.unconfirmedText)
-                            .foregroundStyle(.secondary)
-                    }
+            // The former standalone "Résumés" sidebar section now lives here as a second
+            // tab — eliminates the aller-retour between Enregistrement and Résumés during
+            // a live session. Reuses SummariesSectionView's body as-is rather than
+            // duplicating its logic; environment objects (aiSummary, localLLM) are
+            // inherited the same way RecordingSectionView's own already are, no explicit
+            // re-injection needed since this isn't crossing a `.sheet()` boundary.
+            Picker("", selection: $selectedTab) {
+                ForEach(RecordingTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(8)
             }
-            .frame(minHeight: 150)
-            .frame(maxHeight: .infinity)
-            .background(Color.gray.opacity(0.08))
-            .cornerRadius(8)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            switch selectedTab {
+            case .transcription:
+                transcriptionScrollView
+            case .resume:
+                SummariesSectionView()
+            }
 
             Divider()
 
@@ -251,6 +255,35 @@ struct RecordingSectionView: View {
         }
     }
 
+    private var transcriptionScrollView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(transcription.displaySegments) { segment in
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(segment.text)
+                            .foregroundStyle(.primary)
+                        if !segment.isRefined {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                                .help("En attente de raffinement")
+                        }
+                    }
+                }
+                if !transcription.unconfirmedText.isEmpty {
+                    Text(transcription.unconfirmedText)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+        }
+        .frame(minHeight: 150)
+        .frame(maxHeight: .infinity)
+        .background(Color.gray.opacity(0.08))
+        .cornerRadius(8)
+    }
+
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -262,12 +295,29 @@ struct RecordingSectionView: View {
         return true
     }
 
-    private var statusLabel: String {
+    /// State label only — no longer embeds the elapsed time as a mixed string, so the
+    /// chrono can get its own dedicated, more legible presentation (see `chronoView`)
+    /// instead of being buried inside a small secondary-colored sentence.
+    private var stateLabel: String {
         switch session.recordingState {
         case .idle: return "Prêt"
-        case .recording: return "Enregistrement — \(formattedElapsed)"
-        case .paused: return "En pause — \(formattedElapsed)"
+        case .recording: return "Enregistrement en cours"
+        case .paused: return "En pause"
         case .transcribing: return "Transcription en cours…"
+        }
+    }
+
+    /// Bold tabular digits at 36pt, `.primary` not `.secondary` — a thin monospace chrono
+    /// tested earlier read as barely legible; this is the corrected version.
+    private var chronoView: some View {
+        VStack(spacing: 2) {
+            Text("Temps écoulé")
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+            Text(formattedElapsed)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.primary)
         }
     }
 

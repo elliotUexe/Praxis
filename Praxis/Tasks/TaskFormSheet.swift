@@ -33,6 +33,7 @@ struct TaskFormSheet: View {
     /// Stepper in `subtasksSection`.
     @State private var newSubtaskMinutes: Int = 30
     @State private var focusTarget: FocusTarget?
+    @State private var isDeleteConfirming = false
 
     init(existingTask: PraxisTask?, availableCourses: [CourseOption]) {
         self.existingTask = existingTask
@@ -55,18 +56,16 @@ struct TaskFormSheet: View {
             Text(existingTask == nil ? "Nouvelle tâche" : "Modifier la tâche")
                 .font(.title3)
 
-            Picker("Type", selection: $type) {
-                ForEach(TaskType.allCases, id: \.self) { t in
-                    Text(t.displayName).tag(t)
-                }
-            }
+            typeSegmentedControl
 
             TextField("Titre", text: $title)
                 .textFieldStyle(.roundedBorder)
+                .onChange(of: title) { isDeleteConfirming = false }
 
             TextField("Détail (optionnel)", text: $detail, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2...4)
+                .onChange(of: detail) { isDeleteConfirming = false }
 
             Picker("Cours", selection: $selectedCourseVaultPath) {
                 Text("Aucun").tag(String?.none)
@@ -111,8 +110,12 @@ struct TaskFormSheet: View {
 
             HStack {
                 if existingTask != nil {
-                    Button("Supprimer", role: .destructive) {
-                        deleteTask()
+                    Button(isDeleteConfirming ? "Confirmer la suppression" : "Supprimer", role: .destructive) {
+                        if isDeleteConfirming {
+                            deleteTask()
+                        } else {
+                            isDeleteConfirming = true
+                        }
                     }
                 }
                 Spacer()
@@ -137,6 +140,35 @@ struct TaskFormSheet: View {
                 .environmentObject(taskStore)
                 .onDisappear { focusTimer.reset() }
         }
+    }
+
+    /// 5 equal segments, custom-built (SwiftUI's `.segmented` picker style truncates/
+    /// scrolls with 5 long options) — all 5 types stay visible and comparable at once,
+    /// per the design handoff.
+    private var typeSegmentedControl: some View {
+        HStack(spacing: 2) {
+            ForEach(TaskType.allCases, id: \.self) { t in
+                Button {
+                    type = t
+                } label: {
+                    VStack(spacing: 2) {
+                        Image(systemName: t.iconName)
+                            .foregroundStyle(t.color)
+                        Text(t.shortLabel)
+                            .font(.caption2)
+                            .foregroundStyle(type == t ? .primary : .secondary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+                    .background(type == t ? Color(nsColor: .textBackgroundColor) : Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(2)
+        .background(Color.gray.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 
     private struct FocusTarget: Identifiable {
@@ -191,13 +223,12 @@ struct TaskFormSheet: View {
                         .strikethrough(subtask.isDone)
                         .foregroundStyle(subtask.isDone ? .secondary : .primary)
                     Spacer()
-                    Stepper(
-                        "\(subtask.estimatedMinutes) min",
+                    DurationStepperControl(
+                        minutes: subtask.estimatedMinutes,
+                        onDecrement: { adjustSubtaskMinutes(subtask, by: -5) },
                         onIncrement: { adjustSubtaskMinutes(subtask, by: 5) },
-                        onDecrement: { adjustSubtaskMinutes(subtask, by: -5) }
+                        onSetMinutes: { subtask.estimatedMinutes = max(5, $0); taskStore.save() }
                     )
-                    .font(.caption)
-                    .fixedSize()
                     Button {
                         focusTarget = FocusTarget(task: nil, subtask: subtask)
                     } label: {
@@ -221,9 +252,12 @@ struct TaskFormSheet: View {
                 TextField("Ajouter une sous-tâche…", text: $newSubtaskTitle)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addManualSubtask(to: task) }
-                Stepper("\(newSubtaskMinutes) min", value: $newSubtaskMinutes, in: 5...480, step: 5)
-                    .font(.caption)
-                    .fixedSize()
+                DurationStepperControl(
+                    minutes: newSubtaskMinutes,
+                    onDecrement: { newSubtaskMinutes = max(5, newSubtaskMinutes - 5) },
+                    onIncrement: { newSubtaskMinutes += 5 },
+                    onSetMinutes: { newSubtaskMinutes = max(5, $0) }
+                )
                 Button("Ajouter") { addManualSubtask(to: task) }
                     .disabled(newSubtaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -316,4 +350,47 @@ struct TaskFormSheet: View {
         taskStore.save()
         dismiss()
     }
+}
+
+/// −/champ tapable/+, delta 5 min, plancher 5 min — replaces the previous Stepper-only
+/// controls (both for existing subtask rows and the new-subtask default row) with one the
+/// value can also be typed directly into, per the design handoff.
+private struct DurationStepperControl: View {
+    let minutes: Int
+    let onDecrement: () -> Void
+    let onIncrement: () -> Void
+    let onSetMinutes: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Button(action: onDecrement) {
+                Image(systemName: "minus")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+
+            TextField("", value: Binding(get: { minutes }, set: onSetMinutes), formatter: Self.formatter)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.center)
+                .frame(width: 30)
+
+            Text("min")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            Button(action: onIncrement) {
+                Image(systemName: "plus")
+                    .frame(width: 18, height: 18)
+            }
+            .buttonStyle(.plain)
+        }
+        .font(.caption)
+    }
+
+    private static let formatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .none
+        formatter.minimum = 5
+        return formatter
+    }()
 }

@@ -1,8 +1,12 @@
 import SwiftUI
 
+/// 3 onglets natifs (IA / Vault / À propos) — remplace l'ancien `VStack` plat unique où
+/// clés API, modèle local et mise à jour s'empilaient sans hiérarchie, par le handoff design.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
+    @EnvironmentObject private var localLLM: LocalLLMCoordinator
+    @EnvironmentObject private var aiSummary: AISummaryCoordinator
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
     @State private var anthropicKey: String = KeychainStore.get("anthropic_api_key") ?? ""
@@ -10,20 +14,46 @@ struct SettingsView: View {
     @State private var isTesting = false
 
     var body: some View {
+        VStack(spacing: 0) {
+            TabView {
+                iaTab
+                    .tabItem { Label("IA", systemImage: "sparkles") }
+                vaultTab
+                    .tabItem { Label("Vault", systemImage: "folder") }
+                aboutTab
+                    .tabItem { Label("À propos", systemImage: "info.circle") }
+            }
+            .padding(20)
+            .frame(width: 380, height: 360)
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Fermer") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(12)
+        }
+    }
+
+    private var iaTab: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Réglages IA")
-                .font(.title3)
+            Text("Provider actif partout : \(aiSummary.selectedProvider.rawValue)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Clé API Gemini").font(.caption).foregroundStyle(.secondary)
                 SecureField("AIza…", text: $geminiKey)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: geminiKey) { KeychainStore.set(geminiKey, forKey: "gemini_api_key") }
             }
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Clé API Anthropic (Claude)").font(.caption).foregroundStyle(.secondary)
                 SecureField("sk-ant-…", text: $anthropicKey)
                     .textFieldStyle(.roundedBorder)
+                    .onChange(of: anthropicKey) { KeychainStore.set(anthropicKey, forKey: "anthropic_api_key") }
             }
 
             if let testResult {
@@ -32,28 +62,53 @@ struct SettingsView: View {
                     .foregroundStyle(testResult.hasPrefix("✓") ? .green : .red)
             }
 
-            HStack {
-                Button(isTesting ? "Test en cours…" : "Tester la connexion Gemini") {
-                    testGemini()
-                }
-                .disabled(isTesting || geminiKey.isEmpty)
-
-                Spacer()
-
-                Button("Enregistrer") {
-                    KeychainStore.set(geminiKey, forKey: "gemini_api_key")
-                    KeychainStore.set(anthropicKey, forKey: "anthropic_api_key")
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
+            Button(isTesting ? "Test en cours…" : "Tester la connexion Gemini") {
+                testGemini()
             }
+            .disabled(isTesting || geminiKey.isEmpty)
+            .font(.caption)
 
             Divider()
 
-            updateSection
+            localModelSection
+
+            Spacer(minLength: 0)
         }
-        .padding(20)
-        .frame(width: 380)
+    }
+
+    private var vaultTab: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Vault Obsidian").font(.caption).foregroundStyle(.secondary)
+            Text(VaultPaths.root.path)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var aboutTab: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Praxis").font(.title3)
+            updateSection
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var localModelSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Modèle IA local").font(.caption).foregroundStyle(.secondary)
+            Picker("Modèle", selection: $localLLM.selectedModel) {
+                ForEach(LocalModelChoice.allCases) { choice in
+                    Text(choice.displayName).tag(choice)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            Text("Le premier usage d'un nouveau modèle déclenche un téléchargement de plusieurs Go.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
     }
 
     private var updateSection: some View {
