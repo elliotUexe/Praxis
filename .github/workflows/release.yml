@@ -41,7 +41,15 @@ jobs:
         run: xcodegen generate
 
       - name: Resolve Swift package dependencies
-        run: xcodebuild -resolvePackageDependencies -project Praxis.xcodeproj -scheme Praxis
+        # Same plugin-trust prompt that requires clicking "Trust & Enable" in Xcode.app
+        # locally (mlx-swift-lm ships a build-tool plugin) — these flags are the headless
+        # CI equivalent, needed here too, not just on the actual `build` step below.
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project Praxis.xcodeproj \
+            -scheme Praxis \
+            -skipPackagePluginValidation \
+            -skipMacroValidation
 
       - name: Build Praxis (Release, ad-hoc signed)
         run: |
