@@ -72,6 +72,10 @@ struct SettingsView: View {
                     Link("Télécharger sur GitHub", destination: url)
                         .font(.caption)
                 }
+            } else if updateChecker.noReleasePublished {
+                Text("Aucune release publiée pour l'instant.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             } else if let error = updateChecker.lastError {
                 Text(error)
                     .font(.caption2)

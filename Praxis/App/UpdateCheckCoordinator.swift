@@ -11,6 +11,10 @@ final class UpdateCheckCoordinator: ObservableObject {
     @Published private(set) var latestVersion: String?
     @Published private(set) var latestReleaseURL: URL?
     @Published private(set) var lastError: String?
+    /// True once a check has completed and found no release published on GitHub yet — a
+    /// normal, expected state during early alpha (before the first tag push), distinct
+    /// from `lastError` which means the check itself failed (network, malformed response).
+    @Published private(set) var noReleasePublished = false
 
     /// Matches the repo Praxis is actually published to (see `git remote -v`) — update
     /// this if the GitHub account/repo ever moves again.
@@ -28,18 +32,32 @@ final class UpdateCheckCoordinator: ObservableObject {
     func checkForUpdates() async {
         isChecking = true
         defer { isChecking = false }
+        latestVersion = nil
+        latestReleaseURL = nil
+        noReleasePublished = false
+        lastError = nil
         do {
             var request = URLRequest(url: Self.apiURL)
             request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                lastError = "Vérification impossible : réponse inattendue du serveur."
+                return
+            }
+            // 404 means the repo has no published release yet — normal before the first
+            // tag push (see .github/workflows/release.yml), not a failure.
+            if httpResponse.statusCode == 404 {
+                noReleasePublished = true
+                return
+            }
+            guard httpResponse.statusCode == 200 else {
+                lastError = "Vérification impossible : le serveur a répondu \(httpResponse.statusCode)."
+                return
+            }
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
             latestVersion = release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "v"))
             latestReleaseURL = URL(string: release.htmlURL)
-            lastError = nil
         } catch {
-            // Silent-ish on launch (no release published yet is an expected 404 during
-            // early alpha) — surfaced only as `lastError` for the explicit "Vérifier
-            // maintenant" button in Settings, never as a blocking alert.
             lastError = "Vérification impossible : \(error.localizedDescription)"
         }
     }
