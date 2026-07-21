@@ -64,13 +64,27 @@ struct SettingsView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
 
-            if updateChecker.updateAvailable, let version = updateChecker.latestVersion {
-                Text("Nouvelle version disponible : \(version)")
+            if updateChecker.isUpdating {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(updateChecker.updateStatusText ?? "Mise à jour…")
+                        .font(.caption)
+                }
+            } else if updateChecker.updateAvailable, let version = updateChecker.latestVersion {
+                Text("Nouvelle version disponible : \(version) — installation automatique en cours au prochain lancement.")
                     .font(.caption)
                     .foregroundStyle(.green)
-                if let url = updateChecker.latestReleaseURL {
-                    Link("Télécharger sur GitHub", destination: url)
-                        .font(.caption)
+                HStack {
+                    Button("Installer maintenant") {
+                        Task { await updateChecker.downloadAndInstallUpdate() }
+                    }
+                    .font(.caption)
+                    .disabled(updateChecker.latestDMGURL == nil)
+
+                    if let url = updateChecker.latestReleaseURL {
+                        Link("Voir sur GitHub", destination: url)
+                            .font(.caption)
+                    }
                 }
             } else if updateChecker.noReleasePublished {
                 Text("Aucune release publiée pour l'instant.")
@@ -89,7 +103,7 @@ struct SettingsView: View {
             Button(updateChecker.isChecking ? "Vérification…" : "Vérifier maintenant") {
                 Task { await updateChecker.checkForUpdates() }
             }
-            .disabled(updateChecker.isChecking)
+            .disabled(updateChecker.isChecking || updateChecker.isUpdating)
             .font(.caption)
         }
     }

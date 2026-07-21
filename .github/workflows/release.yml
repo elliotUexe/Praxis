@@ -62,7 +62,12 @@ jobs:
             -skipMacroValidation
 
       - name: Build Praxis (Release, ad-hoc signed)
+        # MARKETING_VERSION is overridden from the pushed tag itself, not read from
+        # project.yml — otherwise a build's self-reported version can permanently drift
+        # from the tag that shipped it, and UpdateCheckCoordinator's version compare
+        # never converges to "up to date" even right after installing that exact build.
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           xcodebuild \
             -project Praxis.xcodeproj \
             -scheme Praxis \
@@ -71,18 +76,23 @@ jobs:
             -skipPackagePluginValidation \
             -skipMacroValidation \
             -derivedDataPath build \
+            MARKETING_VERSION="$VERSION" \
             build
 
-      - name: Zip the .app
+      - name: Create .dmg
         run: |
           APP_PATH="build/Build/Products/Release/Praxis.app"
-          mkdir -p dist
-          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "dist/Praxis-${{ github.ref_name }}.zip"
+          STAGING="dmg-staging"
+          mkdir -p dist "$STAGING"
+          cp -R "$APP_PATH" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create -volname "Praxis" -srcfolder "$STAGING" -ov -format UDZO \
+            "dist/Praxis-${{ github.ref_name }}.dmg"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: dist/*.dmg
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}

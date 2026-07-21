@@ -21,6 +21,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var transcription: LiveTranscriptionCoordinator
     @EnvironmentObject private var importCoordinator: ImportTranscriptionCoordinator
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
@@ -68,6 +69,11 @@ struct ContentView: View {
             await transcription.prepare()
             await importCoordinator.prepare()
             await updateChecker.checkForUpdates()
+            // Auto-install without asking, per Pierre's request — but never while an
+            // enregistrement is actually in progress, since installing quits the app.
+            if updateChecker.updateAvailable, session.recordingState == .idle {
+                await updateChecker.downloadAndInstallUpdate()
+            }
         }
         .sheet(isPresented: $isSettingsPresented) {
             SettingsView()
