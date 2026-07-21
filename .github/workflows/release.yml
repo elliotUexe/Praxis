@@ -27,6 +27,13 @@ jobs:
       - name: Show available Xcode versions
         run: ls /Applications | grep Xcode
 
+      - name: Select newest available Xcode
+        # macos-14 runners default to an old Xcode (15.4) that can't read the project
+        # format xcodegen writes — "future Xcode project file format" error on
+        # -resolvePackageDependencies. Pin the newest one actually installed on the
+        # runner image; bump this if a newer Xcode_*.app shows up in the step above.
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
       - name: Install xcodegen
         # The macos-14 runner image ships with unrelated third-party taps (e.g. aws/tap)
         # already tapped. Recent Homebrew refuses ANY operation while an untrusted tap is
