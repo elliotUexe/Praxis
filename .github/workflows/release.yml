@@ -28,7 +28,14 @@ jobs:
         run: ls /Applications | grep Xcode
 
       - name: Install xcodegen
+        # The macos-14 runner image ships with unrelated third-party taps (e.g. aws/tap)
+        # already tapped. Recent Homebrew refuses ANY operation while an untrusted tap is
+        # present, even one unrelated to what's being installed (exit code 74 with a "taps
+        # are not trusted" warning). Disabling the check is safe here: this is a fresh,
+        # ephemeral CI runner, not a persistent machine.
         run: brew install xcodegen
+        env:
+          HOMEBREW_NO_REQUIRE_TAP_TRUST: 1
 
       - name: Generate Xcode project
         run: xcodegen generate
