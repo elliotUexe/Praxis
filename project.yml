@@ -18,11 +18,15 @@ packages:
     revision: 2c1dd13d41586f63f40ba9ce45ce201026ab52b0
   # Was only a transitive dependency of MLXSwiftLM until here — declared explicitly to
   # import the `MLX` product directly (Memory.cacheLimit, for the GPU cache cap in
-  # LocalLLMCoordinator). Pinned to the exact version already resolved transitively
-  # (Package.resolved) so this doesn't trigger a divergent re-resolution.
+  # LocalLLMCoordinator). `exactVersion: 0.31.6` (matching Package.resolved at the time)
+  # broke CI: mlx-swift >= 0.31.5 declares swift-tools-version 6.3.0, which the runner's
+  # Xcode rejected as "incompatible", and an exact pin gives the resolver no version to
+  # fall back to. A floor instead of an exact pin lets it settle on whatever's actually
+  # compatible on a given toolchain, same as it already did when this was only a
+  # transitive dependency (before this explicit entry existed).
   MLXSwift:
     url: https://github.com/ml-explore/mlx-swift
-    exactVersion: 0.31.6
+    from: 0.30.0
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.0.0
