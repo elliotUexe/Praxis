@@ -22,7 +22,11 @@ struct SubtaskProposalView: View {
             Text("Découper avec l'IA").font(.title3)
             Text(task.title).font(.subheadline).foregroundStyle(.secondary)
 
-            if localLLM.isProposingSubtasks {
+            if localLLM.isUserDisabled {
+                Text("IA locale désactivée (case à cocher dans Enregistrement) — réactivez-la pour générer une proposition.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if localLLM.isProposingSubtasks {
                 ProgressView("Génération en cours…")
             } else if proposals.isEmpty && hasGeneratedOnce {
                 Text("Aucune proposition obtenue — réessayez, ou ajoutez des sous-tâches manuellement.")
@@ -64,7 +68,7 @@ struct SubtaskProposalView: View {
                 Button("Régénérer") {
                     Task { await generate() }
                 }
-                .disabled(localLLM.isProposingSubtasks)
+                .disabled(localLLM.isProposingSubtasks || localLLM.isUserDisabled)
 
                 Spacer()
                 Button("Annuler") { dismiss() }

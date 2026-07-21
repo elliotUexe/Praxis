@@ -25,6 +25,7 @@ struct RecordingSectionView: View {
                 .foregroundStyle(.secondary)
 
             courseDestinationRow
+            localLLMToggleRow
 
             if let currentURL = session.currentRecordingURL {
                 Text(currentURL.lastPathComponent)
@@ -58,7 +59,7 @@ struct RecordingSectionView: View {
                                     transcriptProvider: transcriptProvider
                                 )
                             } else {
-                                localLLM.isEnabled = true
+                                localLLM.setEnabled(true)
                             }
                             localLLM.startSession(
                                 taskStore: taskStore,
@@ -229,6 +230,24 @@ struct RecordingSectionView: View {
             .font(.caption)
             .menuStyle(.borderlessButton)
             .fixedSize()
+        }
+    }
+
+    /// Master on/off checkbox for the local model — off frees its ~4 Go de mémoire
+    /// immédiatement et bloque le repli automatique vers Qwen en l'absence de clé API :
+    /// la transcription continue normalement, seules les fonctions IA sont coupées.
+    private var localLLMToggleRow: some View {
+        HStack(spacing: 4) {
+            Toggle("IA locale (Qwen)", isOn: Binding(
+                get: { !localLLM.isUserDisabled },
+                set: { localLLM.isUserDisabled = !$0 }
+            ))
+            .toggleStyle(.checkbox)
+            .font(.caption)
+
+            Text(localLLM.isModelLoaded ? "· en mémoire" : localLLM.isLoadingModel ? "· chargement…" : "· déchargée")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
     }
 

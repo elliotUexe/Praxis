@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import AppKit
 
 /// Full CRUD editor for a single task — used for both creation (`existingTask == nil`) and
 /// editing. Every field is editable regardless of the task's `origin`: `needsReview` is a
@@ -27,6 +28,10 @@ struct TaskFormSheet: View {
     @State private var horizonDate: Date
     @State private var isSubtaskProposalPresented = false
     @State private var newSubtaskTitle: String = ""
+    /// Default duration offered for a new manual subtask — 30 min per Pierre's ask, but
+    /// each row (this one included, once added) stays freely editable afterwards via the
+    /// Stepper in `subtasksSection`.
+    @State private var newSubtaskMinutes: Int = 30
     @State private var focusTarget: FocusTarget?
 
     init(existingTask: PraxisTask?, availableCourses: [CourseOption]) {
@@ -69,6 +74,15 @@ struct TaskFormSheet: View {
                     Text("\(course.year) · \(course.pole) · \(course.displayName)")
                         .tag(String?.some(course.vaultPath))
                 }
+            }
+
+            if let selectedCourseVaultPath {
+                Button {
+                    openCourseFolder(vaultPath: selectedCourseVaultPath)
+                } label: {
+                    Label("Ouvrir le dossier du cours", systemImage: "folder")
+                }
+                .font(.caption)
             }
 
             typeSpecificFields
@@ -177,9 +191,13 @@ struct TaskFormSheet: View {
                         .strikethrough(subtask.isDone)
                         .foregroundStyle(subtask.isDone ? .secondary : .primary)
                     Spacer()
-                    Text("\(subtask.estimatedMinutes) min")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Stepper(
+                        "\(subtask.estimatedMinutes) min",
+                        onIncrement: { adjustSubtaskMinutes(subtask, by: 5) },
+                        onDecrement: { adjustSubtaskMinutes(subtask, by: -5) }
+                    )
+                    .font(.caption)
+                    .fixedSize()
                     Button {
                         focusTarget = FocusTarget(task: nil, subtask: subtask)
                     } label: {
@@ -203,6 +221,9 @@ struct TaskFormSheet: View {
                 TextField("Ajouter une sous-tâche…", text: $newSubtaskTitle)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addManualSubtask(to: task) }
+                Stepper("\(newSubtaskMinutes) min", value: $newSubtaskMinutes, in: 5...480, step: 5)
+                    .font(.caption)
+                    .fixedSize()
                 Button("Ajouter") { addManualSubtask(to: task) }
                     .disabled(newSubtaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -214,7 +235,7 @@ struct TaskFormSheet: View {
         guard !trimmed.isEmpty else { return }
         let subtask = Subtask(
             title: trimmed,
-            estimatedMinutes: 30,
+            estimatedMinutes: newSubtaskMinutes,
             order: task.subtasks.count,
             origin: "manuel",
             parentTask: task
@@ -222,6 +243,16 @@ struct TaskFormSheet: View {
         taskStore.modelContext.insert(subtask)
         taskStore.save()
         newSubtaskTitle = ""
+        newSubtaskMinutes = 30
+    }
+
+    private func adjustSubtaskMinutes(_ subtask: Subtask, by delta: Int) {
+        subtask.estimatedMinutes = max(5, subtask.estimatedMinutes + delta)
+        taskStore.save()
+    }
+
+    private func openCourseFolder(vaultPath: String) {
+        NSWorkspace.shared.open(VaultPaths.root.appendingPathComponent(vaultPath))
     }
 
     private func toggleSubtask(_ subtask: Subtask) {

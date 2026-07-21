@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
     @State private var anthropicKey: String = KeychainStore.get("anthropic_api_key") ?? ""
@@ -46,9 +47,47 @@ struct SettingsView: View {
                 }
                 .keyboardShortcut(.defaultAction)
             }
+
+            Divider()
+
+            updateSection
         }
         .padding(20)
         .frame(width: 380)
+    }
+
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Mise à jour").font(.caption).foregroundStyle(.secondary)
+
+            Text("Version installée : \(updateChecker.currentVersion)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            if updateChecker.updateAvailable, let version = updateChecker.latestVersion {
+                Text("Nouvelle version disponible : \(version)")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                if let url = updateChecker.latestReleaseURL {
+                    Link("Télécharger sur GitHub", destination: url)
+                        .font(.caption)
+                }
+            } else if let error = updateChecker.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            } else if !updateChecker.isChecking {
+                Text("À jour.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Button(updateChecker.isChecking ? "Vérification…" : "Vérifier maintenant") {
+                Task { await updateChecker.checkForUpdates() }
+            }
+            .disabled(updateChecker.isChecking)
+            .font(.caption)
+        }
     }
 
     private func testGemini() {

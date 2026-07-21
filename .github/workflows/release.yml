@@ -1,0 +1,63 @@
+name: Release
+
+# Triggered by pushing a tag like "v0.2.0" (see README.md "Publier une release" for the
+# exact commands). Builds Praxis in Release configuration, zips the .app, and publishes it
+# as a GitHub Release — this is what UpdateCheckCoordinator polls at launch.
+#
+# Known risk: this dependency chain (WhisperKit, mlx-swift-lm, swift-transformers,
+# swift-jinja pinned to 2.0.0 — see project.yml comments) was genuinely fiddly to get
+# building even locally in Xcode. The first run of this workflow on a fresh GitHub runner
+# may fail for reasons that never showed up locally (different default Xcode version,
+# missing Metal toolchain component, SPM plugin trust). Check the Actions log and adjust
+# the `xcode-select` step or add `xcodebuild -downloadComponent MetalToolchain` if needed.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build-and-release:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show available Xcode versions
+        run: ls /Applications | grep Xcode
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Resolve Swift package dependencies
+        run: xcodebuild -resolvePackageDependencies -project Praxis.xcodeproj -scheme Praxis
+
+      - name: Build Praxis (Release, ad-hoc signed)
+        run: |
+          xcodebuild \
+            -project Praxis.xcodeproj \
+            -scheme Praxis \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            -derivedDataPath build \
+            build
+
+      - name: Zip the .app
+        run: |
+          APP_PATH="build/Build/Products/Release/Praxis.app"
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "dist/Praxis-${{ github.ref_name }}.zip"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}

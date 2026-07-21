@@ -23,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 struct ContentView: View {
     @EnvironmentObject private var transcription: LiveTranscriptionCoordinator
     @EnvironmentObject private var importCoordinator: ImportTranscriptionCoordinator
+    @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
 
     @State private var selectedSection: AppSection? = .recording
     @State private var isSettingsPresented = false
@@ -39,8 +40,17 @@ struct ContentView: View {
                     Button {
                         isSettingsPresented = true
                     } label: {
-                        Image(systemName: "gearshape")
+                        Label("Réglages", systemImage: "gearshape")
+                            .overlay(alignment: .topTrailing) {
+                                if updateChecker.updateAvailable {
+                                    Circle()
+                                        .fill(Color.praxisAccent)
+                                        .frame(width: 6, height: 6)
+                                        .offset(x: 4, y: -2)
+                                }
+                            }
                     }
+                    .help(updateChecker.updateAvailable ? "Mise à jour disponible (\(updateChecker.latestVersion ?? ""))" : "Réglages")
                 }
             }
         } detail: {
@@ -57,6 +67,7 @@ struct ContentView: View {
         .task {
             await transcription.prepare()
             await importCoordinator.prepare()
+            await updateChecker.checkForUpdates()
         }
         .sheet(isPresented: $isSettingsPresented) {
             SettingsView()

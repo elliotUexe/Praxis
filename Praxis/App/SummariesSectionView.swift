@@ -21,14 +21,28 @@ struct SummariesSectionView: View {
             statusBanner
 
             if usingFallback {
-                localSummaryBlock(primary: true)
+                if localLLM.isUserDisabled {
+                    Text("IA locale désactivée (case à cocher dans Enregistrement) — aucune clé API payante configurée non plus, donc aucun résumé ne sera généré.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    localSummaryBlock(primary: true)
+                }
             } else {
                 paidSummaryBlock
 
-                Toggle("Comparer aussi avec le résumé local (Qwen2.5-7B)", isOn: $localLLM.isEnabled)
-                    .font(.caption)
+                Toggle("Comparer aussi avec le résumé local (Qwen2.5-7B)", isOn: Binding(
+                    get: { localLLM.isEnabled },
+                    set: { localLLM.setEnabled($0) }
+                ))
+                .font(.caption)
+                .disabled(localLLM.isUserDisabled)
 
-                if localLLM.isEnabled {
+                if localLLM.isUserDisabled {
+                    Text("IA locale désactivée (case à cocher dans Enregistrement).")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                } else if localLLM.isEnabled {
                     localSummaryBlock(primary: false)
                 }
             }
@@ -41,7 +55,7 @@ struct SummariesSectionView: View {
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(sendQuestion)
                 Button("Envoyer") { sendQuestion() }
-                    .disabled(questionText.isEmpty || isAnswering)
+                    .disabled(questionText.isEmpty || isAnswering || (usingFallback && localLLM.isUserDisabled))
             }
 
             ScrollView {

@@ -17,7 +17,20 @@ import Tokenizers
 /// summary (toggle in Settings) so Pierre can compare quality on the same real course.
 @MainActor
 final class LocalLLMCoordinator: ObservableObject {
-    @Published var isEnabled = false
+    /// Master switch surfaced as a checkbox in the UI ("IA locale activée") — turning it
+    /// off immediately unloads the model to free memory and blocks every local-LLM
+    /// function (summary, extraction, Q&A, subtask proposals) for the rest of the
+    /// session, including the no-paid-key auto-fallback. `isEnabled` is the actual
+    /// per-session run flag every guard in this file checks; `setEnabled(_:)` is the only
+    /// way to turn it on, so this master switch always wins regardless of caller.
+    @Published var isUserDisabled = false {
+        didSet {
+            guard isUserDisabled != oldValue, isUserDisabled else { return }
+            isEnabled = false
+            unload()
+        }
+    }
+    @Published private(set) var isEnabled = false
     @Published private(set) var isModelLoaded = false
     @Published private(set) var isLoadingModel = false
     @Published private(set) var isProcessing = false
@@ -33,7 +46,25 @@ final class LocalLLMCoordinator: ObservableObject {
     @Published private(set) var isAnswering = false
 
     private var modelContainer: ModelContainer?
+    /// Reused across every call site in this file (summary, extraction, Q&A, subtask
+    /// proposals) purely to avoid reloading the model — never for multi-turn memory, since
+    /// each prompt already embeds all the context it needs (prior summary, existing
+    /// subtasks, etc). `ChatSession` keeps a growing KV-cache of the conversation across
+    /// calls, so every call site must call `chatSession.clear()` right before `respond()`:
+    /// without it, prompts from unrelated tasks pile up in the same context, which both
+    /// slows down generation (bigger prefill every call) and degrades output quality (the
+    /// model drifts from "respond with only this JSON" after enough mixed-purpose turns).
     private var chatSession: ChatSession?
+
+    /// Every prompt in this file wants compact, deterministic output (JSON or a short
+    /// factual paragraph), never open-ended chat — so all call sites pin a token cap and a
+    /// repetition penalty before calling `respond()`. Left at the library defaults
+    /// (`maxTokens: nil`, no repetition penalty), a small quantized model can ramble or
+    /// loop for minutes before hitting a natural stop token, which is what turned a
+    /// one-line JSON answer into a 2-minute wait during testing.
+    private static func generateParameters(maxTokens: Int) -> GenerateParameters {
+        GenerateParameters(maxTokens: maxTokens, temperature: 0.3, repetitionPenalty: 1.15)
+    }
 
     private var timer: Timer?
     private var lastProcessedLength = 0
@@ -41,6 +72,24 @@ final class LocalLLMCoordinator: ObservableObject {
     private weak var taskStore: TaskStoreCoordinator?
     private var currentCourseVaultPath: String?
     private var currentSourceLabel: String?
+
+    /// The only way to turn local-LLM functionality on — routes through `isUserDisabled`
+    /// so no caller (the no-key auto-fallback, the "Comparer aussi" toggle) can override
+    /// an explicit user opt-out. Setting to `false` is always allowed.
+    func setEnabled(_ value: Bool) {
+        guard !(value && isUserDisabled) else { return }
+        isEnabled = value
+    }
+
+    /// Drops the loaded model and chat session, freeing the multi-GB of weights from
+    /// memory. Safe to call any time, including mid-generation (in-flight calls already
+    /// hold their own local reference via `guard let chatSession`); `prepareIfNeeded()`
+    /// reloads from the on-disk cache on the next actual use if re-enabled.
+    private func unload() {
+        modelContainer = nil
+        chatSession = nil
+        isModelLoaded = false
+    }
 
     /// Loads the model on first use (one-time multi-GB download, cached by MLX after
     /// that). Safe to call repeatedly — no-ops once loaded or while already loading.
@@ -93,7 +142,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// (`transcriptProvider` tied to the session, cleared on `stopSession`), used when
     /// `AIProviderKind.hasStoredKey` is false for the selected paid provider.
     func askQuestion() {
-        guard !question.isEmpty, let transcript = transcriptProvider?() else { return }
+        guard !isUserDisabled, !question.isEmpty, let transcript = transcriptProvider?() else { return }
         let q = question
         Task {
             isAnswering = true
@@ -106,8 +155,10 @@ final class LocalLLMCoordinator: ObservableObject {
             \(String(transcript.suffix(8000)))
             ---
             Question : \(q)
-            Réponds en Markdown, de façon concise et factuelle.
+            Réponds en français, en Markdown, de façon concise et factuelle.
             """
+            await chatSession.clear()
+            chatSession.generateParameters = Self.generateParameters(maxTokens: 500)
             guard let response = try? await chatSession.respond(to: prompt) else { return }
             answerMarkdown = response.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -178,6 +229,8 @@ final class LocalLLMCoordinator: ObservableObject {
         ---
         Réponds UNIQUEMENT avec le résumé mis à jour dans son ensemble, sans préambule ni commentaire.
         """
+        await chatSession.clear()
+        chatSession.generateParameters = Self.generateParameters(maxTokens: 1200)
         guard let response = try? await chatSession.respond(to: prompt) else { return }
         rollingSummaryMarkdown = response.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -186,6 +239,8 @@ final class LocalLLMCoordinator: ObservableObject {
         guard let chatSession, let taskStore else { return }
         let courseName = currentCourseVaultPath.map(VaultPaths.courseDisplayName)
         let prompt = Self.extractionPrompt(for: delta, courseName: courseName)
+        await chatSession.clear()
+        chatSession.generateParameters = Self.generateParameters(maxTokens: 500)
         guard let response = try? await chatSession.respond(to: prompt),
               let candidates = Self.parseCandidates(from: response),
               !candidates.isEmpty else { return }
@@ -222,6 +277,7 @@ final class LocalLLMCoordinator: ObservableObject {
         dueDate: Date?,
         existingSubtasks: [(title: String, isDone: Bool)]
     ) async -> [ProposedSubtask] {
+        guard !isUserDisabled else { return [] }
         isProposingSubtasks = true
         defer { isProposingSubtasks = false }
 
@@ -235,6 +291,8 @@ final class LocalLLMCoordinator: ObservableObject {
             dueDate: dueDate,
             existingSubtasks: existingSubtasks
         )
+        await chatSession.clear()
+        chatSession.generateParameters = Self.generateParameters(maxTokens: 600)
         guard let response = try? await chatSession.respond(to: prompt),
               let raw = Self.parseSubtaskProposals(from: response) else { return [] }
         return raw.map { ProposedSubtask(title: $0.title, estimatedMinutes: $0.estimatedMinutes) }
@@ -279,11 +337,11 @@ final class LocalLLMCoordinator: ObservableObject {
         }
 
         return """
-        Tu proposes un découpage en sous-tâches concrètes et chronométrées pour aider à réaliser une tâche. Chaque sous-tâche est une étape actionnable avec une durée réaliste en minutes — privilégie des blocs de 15 à 90 minutes, ni des micro-étapes de 5 minutes ni un seul bloc de plusieurs heures.
+        Tu proposes un découpage en sous-tâches concrètes et chronométrées pour aider à réaliser une tâche. Chaque sous-tâche est une étape actionnable avec une durée réaliste en minutes — privilégie des blocs de 15 à 90 minutes, ni des micro-étapes de 5 minutes ni un seul bloc de plusieurs heures. Si le détail de la tâche le permet, propose au moins 3 sous-tâches plutôt qu'un seul bloc générique ; si le détail est trop pauvre pour un vrai découpage, propose une seule sous-tâche invitant à préciser la tâche (ex. "préciser le contenu attendu").
 
         \(context)\(progressContext)
 
-        Réponds UNIQUEMENT avec un JSON valide de cette forme exacte, sans texte autour, sans balises markdown :
+        Réponds UNIQUEMENT en français, avec un JSON valide de cette forme exacte, sans texte autour, sans balises markdown :
         {"subtasks": [{"title": "...", "estimatedMinutes": 30}]}
         """
     }
