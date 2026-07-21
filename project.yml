@@ -11,7 +11,11 @@ packages:
     from: 1.0.0
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
-    branch: main
+    # Pinned instead of `branch: main`: main is a moving target with no release tags,
+    # and a commit fetched fresh by CI (fd0f13b…) broke on a real upstream compile error
+    # (DType.greatestFiniteMagnitudeArray missing) that isn't present in this revision,
+    # the one actually verified building locally. Bump deliberately, not by drifting.
+    revision: 2c1dd13d41586f63f40ba9ce45ce201026ab52b0
   SwiftTransformers:
     url: https://github.com/huggingface/swift-transformers
     from: 1.0.0
@@ -38,6 +42,13 @@ targets:
     info:
       path: Praxis/Resources/Info.plist
       properties:
+        # Without these, xcodegen bakes literal "1.0"/"1" into the generated Info.plist
+        # (its own default when these keys aren't listed here) — every `xcodegen
+        # generate` was silently clobbering the $(MARKETING_VERSION) placeholder back to
+        # a hardcoded value, which is why the installed app kept showing "1.0" no matter
+        # what MARKETING_VERSION said below.
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: "Praxis a besoin d'accéder au micro pour enregistrer et transcrire vos cours."
         LSApplicationCategoryType: "public.app-category.productivity"
     settings:
