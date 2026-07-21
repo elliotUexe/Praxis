@@ -38,8 +38,6 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                sidebarStatusRow
-                Divider()
                 List(AppSection.allCases, selection: $selectedSection) { section in
                     HStack {
                         Label(section.rawValue, systemImage: section.icon)
@@ -55,6 +53,8 @@ struct ContentView: View {
                     }
                     .tag(section)
                 }
+                Divider()
+                sidebarStatusRow
             }
             .navigationTitle("Praxis")
         } detail: {
@@ -86,8 +86,9 @@ struct ContentView: View {
     }
 
     /// "Réglages accessibles depuis un bouton ⚙ à côté du statut" per the design handoff —
-    /// was a plain toolbar item disconnected from any status indicator; this pairs a dot +
-    /// state label with the gear button, right in the sidebar.
+    /// bottom-left footer of the sidebar (below the section list), matching the reference
+    /// design exactly (a first attempt placed this above the list instead, which read as
+    /// competing with the native "Praxis" sidebar title for the same top real estate).
     private var sidebarStatusRow: some View {
         HStack(spacing: 6) {
             Circle()
