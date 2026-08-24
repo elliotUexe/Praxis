@@ -55,30 +55,41 @@ struct TaskRowView: View {
 
     @ViewBuilder
     private var secondaryInfo: some View {
-        switch task.type {
-        case .rendu:
-            if let due = task.dueDate {
-                Text(dueCountdown(due))
-                    .font(.caption2)
-                    .foregroundStyle(due < Date() ? .red : .secondary)
-            }
-        case .revisionFond, .revisionDS:
-            if let minutes = task.estimatedDurationMinutes {
-                Text("\(minutes) min estimées")
+        // A finished task has no deadline pressure left: showing "J-3" or worse "En retard"
+        // on something already done is actively misleading. The completion date replaces
+        // the countdown entirely, for every type.
+        if task.isDone {
+            if let completedAt = task.completedAt {
+                Text("Terminé le \(completedAt.formatted(date: .abbreviated, time: .omitted))")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-        case .blocage:
-            if let waitingOn = task.waitingOn, !waitingOn.isEmpty {
-                Text("En attente : \(waitingOn)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-        case .anticipation:
-            if let horizon = task.horizonDate {
-                Text("Horizon : \(horizon.formatted(date: .abbreviated, time: .omitted))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+        } else {
+            switch task.type {
+            case .rendu:
+                if let due = task.dueDate {
+                    Text(dueCountdown(due))
+                        .font(.caption2)
+                        .foregroundStyle(due < Date() ? .red : .secondary)
+                }
+            case .revisionFond, .revisionDS:
+                if let minutes = task.estimatedDurationMinutes {
+                    Text("\(minutes) min estimées")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            case .blocage:
+                if let waitingOn = task.waitingOn, !waitingOn.isEmpty {
+                    Text("En attente : \(waitingOn)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            case .anticipation:
+                if let horizon = task.horizonDate {
+                    Text("Horizon : \(horizon.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

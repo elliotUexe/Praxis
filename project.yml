@@ -62,6 +62,17 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: "Praxis a besoin d'accéder au micro pour enregistrer et transcrire vos cours."
         LSApplicationCategoryType: "public.app-category.productivity"
+    entitlements:
+      path: Praxis/Resources/Praxis.entitlements
+      properties:
+        # Required because ENABLE_HARDENED_RUNTIME is on (below): the hardened runtime
+        # denies microphone access at the system level unless the app declares this
+        # entitlement — regardless of the user having granted mic permission in System
+        # Settings. That mismatch is exactly what made `AVCaptureDevice.requestAccess`
+        # keep returning false with Praxis listed and checked under Confidentialité >
+        # Micro. Declared here (not as a loose file) so `xcodegen generate` can't clobber
+        # it, same reasoning as the Info.plist version keys above.
+        com.apple.security.device.audio-input: true
     settings:
       base:
         # WhisperKit's streaming API (AudioStreamTranscriber) isn't fully Sendable-annotated yet;

@@ -128,7 +128,7 @@ struct SettingsView: View {
     }
 
     private var localModelSection: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text("Modèle IA local").font(.caption).foregroundStyle(.secondary)
             Picker("Modèle", selection: $localLLM.selectedModel) {
                 ForEach(LocalModelChoice.allCases) { choice in
@@ -137,6 +137,42 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+            .disabled(localLLM.isUserDisabled)
+
+            // The model is never loaded at launch (several GB of RAM) — it loads lazily on
+            // first real use, which is why the status reads "déchargée" until something
+            // needs it. This makes that load explicit and on-demand.
+            HStack(spacing: 8) {
+                if localLLM.isLoadingModel {
+                    ProgressView().controlSize(.small)
+                    Text("Chargement en cours…").font(.caption)
+                } else {
+                    Circle()
+                        .fill(localLLM.isModelLoaded ? Color.green : Color.secondary)
+                        .frame(width: 6, height: 6)
+                    Text(localLLM.isModelLoaded ? "En mémoire" : "Déchargée")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if localLLM.isModelLoaded {
+                        Button("Décharger") { localLLM.unload() }
+                            .font(.caption)
+                    } else {
+                        Button("Charger") {
+                            Task { await localLLM.prepareIfNeeded() }
+                        }
+                        .font(.caption)
+                        .disabled(localLLM.isUserDisabled)
+                    }
+                }
+            }
+
+            if let error = localLLM.lastError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+            }
+
             Text("Le premier usage d'un nouveau modèle déclenche un téléchargement de plusieurs Go.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)

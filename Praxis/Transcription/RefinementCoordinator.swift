@@ -21,6 +21,11 @@ actor RefinementCoordinator {
         ))
     }
 
+    /// Frees the large-v3 weights. `prepare()` reloads from the on-disk cache on demand.
+    func unload() {
+        whisperKit = nil
+    }
+
     func refine(samples: [Float]) async throws -> String {
         guard let whisperKit else { return "" }
         let options = DecodingOptions(

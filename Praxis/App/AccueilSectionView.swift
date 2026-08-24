@@ -15,6 +15,9 @@ struct AccueilSectionView: View {
     /// — a direct binding to `ContentView`'s sidebar selection rather than any indirect
     /// navigation mechanism.
     @Binding var selectedSection: AppSection?
+    /// Set alongside `selectedSection` when navigating to Tâches, so the list arrives
+    /// already filtered on the course Pierre tapped (owned by `ContentView`).
+    @Binding var taskCourseFilter: String?
 
     @Query(filter: #Predicate<PraxisTask> { !$0.isDone && !$0.isRejected }, sort: \PraxisTask.dueDate)
     private var openTasks: [PraxisTask]
@@ -73,6 +76,9 @@ struct AccueilSectionView: View {
                 Button {
                     // Sends Pierre to Tâches per his explicit ask, while also opening the
                     // task directly rather than leaving him to find it in the full list.
+                    // Clears any course filter left over from a previous course-card tap,
+                    // otherwise this task could land behind a filter that hides it.
+                    taskCourseFilter = nil
                     selectedSection = .tasks
                     editingTask = task
                 } label: {
@@ -128,24 +134,40 @@ struct AccueilSectionView: View {
             } else {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(courseSummaries) { course in
-                        Button {
-                            courseForQuestion = course
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(course.displayName)
-                                    .font(.callout)
-                                    .lineLimit(1)
-                                Text("\(course.openCount) tâche\(course.openCount > 1 ? "s" : "") ouverte\(course.openCount > 1 ? "s" : "")")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+                        // Primary action is navigation (Pierre's ask: go to the task list
+                        // filtered on this course). Q&A keeps its own affordance rather
+                        // than owning the whole cell like it did before.
+                        HStack(spacing: 6) {
+                            Button {
+                                taskCourseFilter = course.vaultPath
+                                selectedSection = .tasks
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(course.displayName)
+                                        .font(.callout)
+                                        .lineLimit(1)
+                                    Text("\(course.openCount) tâche\(course.openCount > 1 ? "s" : "") ouverte\(course.openCount > 1 ? "s" : "")")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(10)
-                            .background(Color.gray.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                            .buttonStyle(.plain)
+                            .help("Voir les tâches de ce cours")
+
+                            Button {
+                                courseForQuestion = course
+                            } label: {
+                                Image(systemName: "questionmark.circle")
+                                    .foregroundStyle(Color.praxisAccent)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Poser une question sur ce cours")
                         }
-                        .buttonStyle(.plain)
-                        .help("Poser une question sur ce cours")
+                        .padding(10)
+                        .background(Color.gray.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
                     }
                 }
             }

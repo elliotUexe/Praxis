@@ -59,6 +59,22 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         }
     }
 
+    /// Frees both Whisper models (live + refinement) — several GB combined, loaded eagerly
+    /// at launch by `ContentView.task` so a recording can start instantly. Pierre works in
+    /// Praxis without recording most of the time, so this reclaims that RAM on demand;
+    /// `prepare()` reloads from the on-disk model cache (no re-download) when needed.
+    /// Refuses while a stream is live rather than yanking the model out from under it.
+    func unloadModels() async {
+        guard audioStreamTranscriber == nil else {
+            lastError = "Impossible de décharger pendant un enregistrement."
+            return
+        }
+        whisperKit = nil
+        isReady = false
+        await refinementCoordinator.unload()
+        isRefiningReady = false
+    }
+
     func start(outputURL: URL) async {
         guard let whisperKit, let tokenizer = whisperKit.tokenizer else {
             lastError = "Modèle non chargé."

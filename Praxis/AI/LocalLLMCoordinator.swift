@@ -138,8 +138,10 @@ final class LocalLLMCoordinator: ObservableObject {
     /// Drops the loaded model and chat session, freeing the multi-GB of weights from
     /// memory. Safe to call any time, including mid-generation (in-flight calls already
     /// hold their own local reference via `guard let chatSession`); `prepareIfNeeded()`
-    /// reloads from the on-disk cache on the next actual use if re-enabled.
-    private func unload() {
+    /// reloads from the on-disk cache on the next actual use if re-enabled. Also exposed
+    /// to the UI ("Décharger" in Réglages) so Pierre can reclaim the memory on demand
+    /// without having to flip the master switch off.
+    func unload() {
         modelContainer = nil
         chatSession = nil
         isModelLoaded = false
@@ -153,9 +155,13 @@ final class LocalLLMCoordinator: ObservableObject {
     }
 
     /// Loads the model on first use (one-time multi-GB download, cached by MLX after
-    /// that). Safe to call repeatedly — no-ops once loaded or while already loading.
+    /// that). Safe to call repeatedly — no-ops once loaded, while already loading, or
+    /// while the master switch is off. Called lazily by every feature that needs the
+    /// model, and directly by the "Charger" button in Réglages: until one of those
+    /// happens the model is legitimately "déchargée" — nothing loads it at launch, by
+    /// design (it costs several GB of RAM).
     func prepareIfNeeded() async {
-        guard modelContainer == nil, !isLoadingModel else { return }
+        guard !isUserDisabled, modelContainer == nil, !isLoadingModel else { return }
         isLoadingModel = true
         lastError = nil
         do {
@@ -171,7 +177,7 @@ final class LocalLLMCoordinator: ObservableObject {
             // 24 Go, not a hard requirement of the API itself.
             MLX.Memory.cacheLimit = 2 * 1024 * 1024 * 1024
         } catch {
-            lastError = "Impossible de charger le modèle local (Qwen2.5-7B) : \(error.localizedDescription)"
+            lastError = "Impossible de charger le modèle local (\(selectedModel.displayName)) : \(error.localizedDescription)"
         }
         isLoadingModel = false
     }

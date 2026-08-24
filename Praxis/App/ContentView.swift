@@ -32,6 +32,10 @@ struct ContentView: View {
 
     @State private var selectedSection: AppSection? = .accueil
     @State private var isSettingsPresented = false
+    /// Vault path of the course the Tâches list is filtered on, or nil for "toutes les
+    /// matières". Lives here rather than inside `TasksSectionView` so Accueil can set it
+    /// while navigating (tap a course card → Tâches, already filtered on that course).
+    @State private var taskCourseFilter: String?
 
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
 
@@ -60,11 +64,14 @@ struct ContentView: View {
         } detail: {
             switch selectedSection ?? .accueil {
             case .accueil:
-                AccueilSectionView(selectedSection: $selectedSection)
+                AccueilSectionView(
+                    selectedSection: $selectedSection,
+                    taskCourseFilter: $taskCourseFilter
+                )
             case .recording:
                 RecordingSectionView()
             case .tasks:
-                TasksSectionView()
+                TasksSectionView(courseFilter: $taskCourseFilter)
             }
         }
         .frame(minWidth: 760, minHeight: 520)

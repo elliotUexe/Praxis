@@ -24,6 +24,17 @@ final class ImportTranscriptionCoordinator: ObservableObject {
         }
     }
 
+    /// Frees the import model. Refuses mid-transcription rather than pulling the model out
+    /// from under a running job; `prepare()` reloads from the on-disk cache on demand.
+    func unloadModel() {
+        guard !isTranscribing else {
+            lastError = "Impossible de décharger pendant une transcription."
+            return
+        }
+        whisperKit = nil
+        isReady = false
+    }
+
     func transcribe(fileURL: URL) async {
         guard let whisperKit else {
             lastError = "Modèle d'import non chargé."

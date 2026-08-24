@@ -14,17 +14,29 @@ struct TasksSectionView: View {
     private var rejectedTasks: [PraxisTask]
     @State private var isRejectedTasksPresented = false
 
+    /// Vault path of the course to filter on, nil = toutes les matières. Owned by
+    /// `ContentView` so Accueil can navigate here with a course already selected.
+    @Binding var courseFilter: String?
+
     @State private var availableCourses: [CourseOption] = []
     @State private var editingTask: PraxisTask?
     @State private var isCreatingTask = false
     @State private var isTriagePresented = false
     @State private var pasteText: String = ""
 
-    private var needsReviewCount: Int { allTasks.filter { $0.needsReview && !$0.isDone }.count }
+    /// Everything below this point reads `visibleTasks`, never `allTasks` directly, so the
+    /// course filter applies uniformly to the list, the counts, and the export menu.
+    private var visibleTasks: [PraxisTask] {
+        guard let courseFilter else { return allTasks }
+        return allTasks.filter { $0.course?.id == courseFilter }
+    }
+
+    private var needsReviewCount: Int { visibleTasks.filter { $0.needsReview && !$0.isDone }.count }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            courseFilterBar
             pasteImportRow
             Divider()
             taskListByType
@@ -84,12 +96,12 @@ struct TasksSectionView: View {
                 Label("Vérifier les imports", systemImage: "arrow.triangle.2.circlepath")
             }
             Menu {
-                Button("Toutes les tâches") { exportTasks(courseFilter: nil) }
+                Button("Toutes les tâches") { exportTasks(course: nil) }
                     .disabled(allTasks.isEmpty)
                 if !coursesWithTasks.isEmpty {
                     Divider()
                     ForEach(coursesWithTasks, id: \.id) { course in
-                        Button(course.displayName) { exportTasks(courseFilter: course) }
+                        Button(course.displayName) { exportTasks(course: course) }
                     }
                 }
             } label: {
@@ -106,9 +118,47 @@ struct TasksSectionView: View {
         }
     }
 
-    /// Distinct courses that actually have at least one task — populates the per-course
-    /// export menu without a separate fetch (Course doesn't need Hashable/Equatable
-    /// conformance this way, just identity comparison on the vault-path `id`).
+    /// Filter chips: "Toutes" + one per course that actually has tasks, plus a "Sans
+    /// cours" escape hatch since a task's `course` is optional. Deliberately not a Menu —
+    /// when Accueil navigates here with a filter pre-applied, the active state has to be
+    /// visible at a glance, otherwise the list silently looks like it lost tasks.
+    @ViewBuilder
+    private var courseFilterBar: some View {
+        if !coursesWithTasks.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    filterChip(label: "Toutes", isActive: courseFilter == nil) { courseFilter = nil }
+                    ForEach(coursesWithTasks, id: \.id) { course in
+                        filterChip(
+                            label: course.displayName,
+                            isActive: courseFilter == course.id
+                        ) {
+                            courseFilter = (courseFilter == course.id) ? nil : course.id
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func filterChip(label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(isActive ? Color.white : Color.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(isActive ? Color.praxisAccent : Color.gray.opacity(0.12))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Distinct courses that actually have at least one task — populates both the filter
+    /// chips and the per-course export menu without a separate fetch (Course doesn't need
+    /// Hashable/Equatable conformance this way, just identity comparison on the vault-path
+    /// `id`). Always computed from `allTasks`, never `visibleTasks` — otherwise applying a
+    /// filter would erase every other course from the bar and strand Pierre there.
     private var coursesWithTasks: [Course] {
         var seen = Set<String>()
         var result: [Course] = []
@@ -123,23 +173,27 @@ struct TasksSectionView: View {
     /// Phase 4: on-demand file export via NSSavePanel — deliberately not an automatic
     /// vault write. Pre-fills the course's own folder as the save location for
     /// convenience only; Pierre confirms (or changes) it every time.
-    private func exportTasks(courseFilter: Course?) {
-        let tasksToExport = courseFilter == nil
+    /// Parameter deliberately named `course`, not `courseFilter` — the latter would shadow
+    /// the view's `@Binding var courseFilter` inside this body. Export always works off
+    /// `allTasks`: the export menu picks its own scope explicitly, independent of whatever
+    /// the on-screen filter chips happen to be showing.
+    private func exportTasks(course: Course?) {
+        let tasksToExport = course == nil
             ? allTasks
-            : allTasks.filter { $0.course?.id == courseFilter?.id }
+            : allTasks.filter { $0.course?.id == course?.id }
         guard !tasksToExport.isEmpty else { return }
 
-        let tag = courseFilter.map { "imt/\(slug($0.displayName))" }
+        let tag = course.map { "imt/\(slug($0.displayName))" }
         let markdown = TaskMarkdownExporter.markdown(
             for: tasksToExport,
-            courseDisplayName: courseFilter?.displayName,
+            courseDisplayName: course?.displayName,
             tag: tag
         )
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = TaskMarkdownExporter.suggestedFilename(courseDisplayName: courseFilter?.displayName)
+        panel.nameFieldStringValue = TaskMarkdownExporter.suggestedFilename(courseDisplayName: course?.displayName)
         panel.message = "Choisissez où enregistrer l'export des tâches"
-        panel.directoryURL = courseFilter.map { VaultPaths.root.appendingPathComponent($0.id) } ?? VaultPaths.root
+        panel.directoryURL = course.map { VaultPaths.root.appendingPathComponent($0.id) } ?? VaultPaths.root
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? markdown.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -191,7 +245,7 @@ struct TasksSectionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 ForEach(TaskType.allCases, id: \.self) { type in
-                    let tasksForType = allTasks.filter { $0.type == type && !$0.isDone }
+                    let tasksForType = visibleTasks.filter { $0.type == type && !$0.isDone }
                     if !tasksForType.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(type.displayName)
@@ -208,7 +262,7 @@ struct TasksSectionView: View {
                     }
                 }
 
-                let doneTasks = allTasks.filter(\.isDone)
+                let doneTasks = visibleTasks.filter(\.isDone)
                 if !doneTasks.isEmpty {
                     DisclosureGroup("Terminées (\(doneTasks.count))") {
                         ForEach(doneTasks) { task in
@@ -221,8 +275,10 @@ struct TasksSectionView: View {
                     }
                 }
 
-                if allTasks.isEmpty {
-                    Text("Aucune tâche pour l'instant.")
+                if visibleTasks.isEmpty {
+                    Text(courseFilter == nil
+                         ? "Aucune tâche pour l'instant."
+                         : "Aucune tâche pour cette matière.")
                         .foregroundStyle(.tertiary)
                         .padding(.top, 20)
                 }

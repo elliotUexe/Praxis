@@ -35,7 +35,11 @@ struct RecordingSectionView: View {
             }
 
             courseDestinationRow
-            localLLMStatusBadge
+            HStack(spacing: 10) {
+                localLLMStatusBadge
+                Divider().frame(height: 12)
+                sttModelsRow
+            }
 
             if let currentURL = session.currentRecordingURL {
                 Text(currentURL.lastPathComponent)
@@ -249,6 +253,55 @@ struct RecordingSectionView: View {
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Whisper models (live + refinement + import) total several GB and load eagerly at
+    /// launch so a recording can start instantly. Pierre works in Praxis without recording
+    /// most of the time, so this frees that RAM on demand — reloading reads the on-disk
+    /// model cache, no re-download. Disabled while recording/transcribing (the coordinators
+    /// refuse anyway, this just avoids offering a dead button).
+    private var sttModelsRow: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(sttStatusColor)
+                .frame(width: 6, height: 6)
+            Text("Transcription \(sttStatusText)")
+                .font(.system(size: 11.5))
+                .foregroundStyle(.secondary)
+
+            if transcription.isLoadingModel || importCoordinator.isLoadingModel {
+                ProgressView().controlSize(.small)
+            } else if transcription.isReady || importCoordinator.isReady {
+                Button("Décharger") {
+                    Task {
+                        await transcription.unloadModels()
+                        importCoordinator.unloadModel()
+                    }
+                }
+                .font(.system(size: 11))
+                .disabled(session.recordingState != .idle || importCoordinator.isTranscribing)
+            } else {
+                Button("Charger") {
+                    Task {
+                        await transcription.prepare()
+                        await importCoordinator.prepare()
+                    }
+                }
+                .font(.system(size: 11))
+            }
+        }
+    }
+
+    private var sttStatusText: String {
+        if transcription.isLoadingModel || importCoordinator.isLoadingModel { return "chargement…" }
+        if transcription.isReady || importCoordinator.isReady { return "en mémoire" }
+        return "déchargée"
+    }
+
+    private var sttStatusColor: Color {
+        if transcription.isLoadingModel || importCoordinator.isLoadingModel { return .orange }
+        if transcription.isReady || importCoordinator.isReady { return .green }
+        return .gray
     }
 
     private var localLLMStatusText: String {
