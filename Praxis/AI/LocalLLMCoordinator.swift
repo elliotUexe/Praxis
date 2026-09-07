@@ -43,6 +43,19 @@ enum LocalModelChoice: String, CaseIterable, Identifiable {
 /// summary (toggle in Settings) so Pierre can compare quality on the same real course.
 @MainActor
 final class LocalLLMCoordinator: ObservableObject {
+    /// Hard kill switch for the whole on-device LLM, flipped off after the 2026-09-07
+    /// crash: MLX registers a Metal completion handler that `throw`s a C++ exception when
+    /// a command buffer fails (mlx-swift `backend/metal/eval.cpp`). That handler runs on
+    /// `com.Metal.CompletionQueueDispatch`, so the throw can't be caught by anything in
+    /// Praxis and goes straight to `std::terminate`/`abort()`. Any GPU hiccup during
+    /// inference therefore kills the app outright, and it did so mid-recording while
+    /// WhisperKit was using the same GPU/ANE. Until the AI features move to a paid API,
+    /// nothing here may load a model or run inference.
+    ///
+    /// Every public entry point below checks this first. The MLX code underneath is left
+    /// intact and unreachable rather than deleted, so reconnecting is a one-line change.
+    static let isAvailable = false
+
     /// Master switch surfaced as a checkbox in the UI ("IA locale activée") — turning it
     /// off immediately unloads the model to free memory and blocks every local-LLM
     /// function (summary, extraction, Q&A, subtask proposals) for the rest of the
@@ -131,6 +144,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// so no caller (the no-key auto-fallback, the "Comparer aussi" toggle) can override
     /// an explicit user opt-out. Setting to `false` is always allowed.
     func setEnabled(_ value: Bool) {
+        guard Self.isAvailable else { return }
         guard !(value && isUserDisabled) else { return }
         isEnabled = value
     }
@@ -161,6 +175,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// happens the model is legitimately "déchargée" — nothing loads it at launch, by
     /// design (it costs several GB of RAM).
     func prepareIfNeeded() async {
+        guard Self.isAvailable else { return }
         guard !isUserDisabled, modelContainer == nil, !isLoadingModel else { return }
         isLoadingModel = true
         lastError = nil
@@ -192,7 +207,7 @@ final class LocalLLMCoordinator: ObservableObject {
         sourceLabel: String?,
         transcriptProvider: @escaping () -> String
     ) {
-        guard isEnabled else { return }
+        guard Self.isAvailable, isEnabled else { return }
         self.taskStore = taskStore
         self.currentCourseVaultPath = courseVaultPath
         self.currentSourceLabel = sourceLabel
@@ -215,7 +230,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// (`transcriptProvider` tied to the session, cleared on `stopSession`), used when
     /// `AIProviderKind.hasStoredKey` is false for the selected paid provider.
     func askQuestion() {
-        guard !isUserDisabled, !question.isEmpty, let transcript = transcriptProvider?() else { return }
+        guard Self.isAvailable, !isUserDisabled, !question.isEmpty, let transcript = transcriptProvider?() else { return }
         let q = question
         Task {
             isAnswering = true
@@ -246,7 +261,7 @@ final class LocalLLMCoordinator: ObservableObject {
         courseVaultPath: String?,
         sourceLabel: String?
     ) async {
-        guard isEnabled else { return }
+        guard Self.isAvailable, isEnabled else { return }
         await prepareIfNeeded()
         guard isModelLoaded else { return }
 
@@ -374,7 +389,7 @@ final class LocalLLMCoordinator: ObservableObject {
         dueDate: Date?,
         existingSubtasks: [(title: String, isDone: Bool)]
     ) async -> [ProposedSubtask] {
-        guard !isUserDisabled else { return [] }
+        guard Self.isAvailable, !isUserDisabled else { return [] }
         isProposingSubtasks = true
         defer { isProposingSubtasks = false }
 
@@ -520,7 +535,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// overlap with the question, feeds the model only the best-scoring chunks up to a
     /// character budget — cheap and good enough for a single course folder's worth of text.
     func askCourseQuestion(courseVaultPath: String, question: String) async -> String? {
-        guard !isUserDisabled, !question.isEmpty else { return nil }
+        guard Self.isAvailable, !isUserDisabled, !question.isEmpty else { return nil }
         await prepareIfNeeded()
         guard let chatSession else { return nil }
 

@@ -10,7 +10,6 @@ struct RecordingSectionView: View {
     @EnvironmentObject private var importCoordinator: ImportTranscriptionCoordinator
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
-    @EnvironmentObject private var localLLM: LocalLLMCoordinator
 
     @State private var isFileImporterPresented = false
     @State private var isDropTargeted = false
@@ -35,11 +34,7 @@ struct RecordingSectionView: View {
             }
 
             courseDestinationRow
-            HStack(spacing: 10) {
-                localLLMStatusBadge
-                Divider().frame(height: 12)
-                sttModelsRow
-            }
+            sttModelsRow
 
             if let currentURL = session.currentRecordingURL {
                 Text(currentURL.lastPathComponent)
@@ -63,30 +58,21 @@ struct RecordingSectionView: View {
                             let transcriptProvider: () -> String = { [weak transcription] in
                                 transcription?.displaySegments.map(\.text).joined(separator: " ") ?? ""
                             }
-                            // No valid key for the selected paid provider → everything
-                            // (summary + Q&A) runs on the local model instead, not just
-                            // the extraction that already always ran locally.
-                            let hasKey = aiSummary.selectedProvider.hasStoredKey
-                            if hasKey {
+                            // The local-LLM live cycle used to run here alongside the paid
+                            // summary; it's disconnected (see LocalLLMCoordinator
+                            // .isAvailable) after crashing the app mid-recording. Without
+                            // an API key there is simply no AI pass during a session now.
+                            if aiSummary.selectedProvider.hasStoredKey {
                                 aiSummary.startSession(
                                     outputFolder: outputURL.deletingLastPathComponent(),
                                     transcriptProvider: transcriptProvider
                                 )
-                            } else {
-                                localLLM.setEnabled(true)
                             }
-                            localLLM.startSession(
-                                taskStore: taskStore,
-                                courseVaultPath: session.destinationCourseVaultPath,
-                                sourceLabel: outputURL.deletingPathExtension().lastPathComponent,
-                                transcriptProvider: transcriptProvider
-                            )
                         }
                     } else {
                         session.stopRecording()
                         Task { await transcription.stop() }
                         aiSummary.stopSession()
-                        localLLM.stopSession()
                     }
                 }
                 .disabled(!transcription.isReady && session.recordingState == .idle)
@@ -111,7 +97,7 @@ struct RecordingSectionView: View {
             // The former standalone "Résumés" sidebar section now lives here as a second
             // tab — eliminates the aller-retour between Enregistrement and Résumés during
             // a live session. Reuses SummariesSectionView's body as-is rather than
-            // duplicating its logic; environment objects (aiSummary, localLLM) are
+            // duplicating its logic; environment objects (aiSummary) are
             // inherited the same way RecordingSectionView's own already are, no explicit
             // re-injection needed since this isn't crossing a `.sheet()` boundary.
             Picker("", selection: $selectedTab) {
@@ -172,23 +158,8 @@ struct RecordingSectionView: View {
                 Task { await importCoordinator.transcribe(fileURL: url) }
             }
         }
-        .onChange(of: importCoordinator.lastOutputURL) { _, newValue in
-            guard let newValue else { return }
-            Task { await processImportedTranscript(at: newValue) }
-        }
     }
 
-    /// Phase 5's Import hook: runs the same local-LLM extraction/summary the live path
-    /// uses, but as one batch pass over the finished transcript rather than a timer.
-    private func processImportedTranscript(at url: URL) async {
-        guard localLLM.isEnabled, let text = try? String(contentsOf: url, encoding: .utf8) else { return }
-        await localLLM.processFullTranscript(
-            text,
-            taskStore: taskStore,
-            courseVaultPath: VaultPaths.courseVaultPath(fromFileURL: url),
-            sourceLabel: url.deletingPathExtension().lastPathComponent
-        )
-    }
 
     private var destinationLabel: String {
         if let coursePath = session.destinationCourseVaultPath {
@@ -241,19 +212,6 @@ struct RecordingSectionView: View {
         }
     }
 
-    /// Read-only status badge, not an interactive control — per the design handoff, the
-    /// real on/off switch lives in Réglages (`SettingsView.localLLMEnableSection`) as its
-    /// own standalone button, distinct from this recording-view status indicator.
-    private var localLLMStatusBadge: some View {
-        HStack(spacing: 4) {
-            Circle()
-                .fill(localLLMStatusColor)
-                .frame(width: 6, height: 6)
-            Text("IA locale \(localLLMStatusText)")
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
-        }
-    }
 
     /// Whisper models (live + refinement + import) total several GB and load eagerly at
     /// launch so a recording can start instantly. Pierre works in Praxis without recording
@@ -304,19 +262,7 @@ struct RecordingSectionView: View {
         return .gray
     }
 
-    private var localLLMStatusText: String {
-        if localLLM.isUserDisabled { return "désactivée" }
-        if localLLM.isModelLoaded { return "en mémoire" }
-        if localLLM.isLoadingModel { return "chargement…" }
-        return "déchargée"
-    }
 
-    private var localLLMStatusColor: Color {
-        if localLLM.isUserDisabled { return .gray }
-        if localLLM.isModelLoaded { return .green }
-        if localLLM.isLoadingModel { return .orange }
-        return .secondary
-    }
 
     private var transcriptionScrollView: some View {
         ScrollView {

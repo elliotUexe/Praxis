@@ -8,7 +8,6 @@ import AppKit
 /// Pierre can correct anything, including auto-imported tasks.
 struct TaskFormSheet: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
-    @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @EnvironmentObject private var focusTimer: FocusTimerCoordinator
     @Environment(\.dismiss) private var dismiss
 
@@ -26,7 +25,6 @@ struct TaskFormSheet: View {
     @State private var waitingOn: String
     @State private var hasHorizonDate: Bool
     @State private var horizonDate: Date
-    @State private var isSubtaskProposalPresented = false
     @State private var newSubtaskTitle: String = ""
     /// Default duration offered for a new manual subtask — 30 min per Pierre's ask, but
     /// each row (this one included, once added) stays freely editable afterwards via the
@@ -127,13 +125,6 @@ struct TaskFormSheet: View {
         }
         .padding()
         .frame(width: 420)
-        .sheet(isPresented: $isSubtaskProposalPresented) {
-            if let existingTask {
-                SubtaskProposalView(task: existingTask)
-                    .environmentObject(taskStore)
-                    .environmentObject(localLLM)
-            }
-        }
         .sheet(item: $focusTarget) { target in
             FocusTimerView(task: target.task, subtask: target.subtask)
                 .environmentObject(focusTimer)
@@ -199,12 +190,6 @@ struct TaskFormSheet: View {
                     focusTarget = FocusTarget(task: task, subtask: nil)
                 } label: {
                     Label("Concentration", systemImage: "leaf")
-                }
-                .font(.caption)
-                Button {
-                    isSubtaskProposalPresented = true
-                } label: {
-                    Label("Découper avec l'IA", systemImage: "sparkles")
                 }
                 .font(.caption)
             }

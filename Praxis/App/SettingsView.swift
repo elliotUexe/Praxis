@@ -5,7 +5,6 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
-    @EnvironmentObject private var localLLM: LocalLLMCoordinator
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
@@ -72,28 +71,12 @@ struct SettingsView: View {
 
             Divider()
 
-            localLLMEnableSection
-            localModelSection
-
-            Divider()
-
             appearanceSection
 
             Spacer(minLength: 0)
         }
     }
 
-    /// A standalone control — distinct from `localModelSection` (Rapide/Qualité, a
-    /// different setting) and from the read-only status badge in `RecordingSectionView`,
-    /// which no longer has an interactive toggle of its own per the design handoff
-    /// ("pas une Toggle SwiftUI pleine largeur ... la vraie bascule reste dans Réglages").
-    private var localLLMEnableSection: some View {
-        Toggle("IA locale activée", isOn: Binding(
-            get: { !localLLM.isUserDisabled },
-            set: { localLLM.isUserDisabled = !$0 }
-        ))
-        .font(.callout)
-    }
 
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -127,57 +110,6 @@ struct SettingsView: View {
         }
     }
 
-    private var localModelSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Modèle IA local").font(.caption).foregroundStyle(.secondary)
-            Picker("Modèle", selection: $localLLM.selectedModel) {
-                ForEach(LocalModelChoice.allCases) { choice in
-                    Text(choice.displayName).tag(choice)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .disabled(localLLM.isUserDisabled)
-
-            // The model is never loaded at launch (several GB of RAM) — it loads lazily on
-            // first real use, which is why the status reads "déchargée" until something
-            // needs it. This makes that load explicit and on-demand.
-            HStack(spacing: 8) {
-                if localLLM.isLoadingModel {
-                    ProgressView().controlSize(.small)
-                    Text("Chargement en cours…").font(.caption)
-                } else {
-                    Circle()
-                        .fill(localLLM.isModelLoaded ? Color.green : Color.secondary)
-                        .frame(width: 6, height: 6)
-                    Text(localLLM.isModelLoaded ? "En mémoire" : "Déchargée")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if localLLM.isModelLoaded {
-                        Button("Décharger") { localLLM.unload() }
-                            .font(.caption)
-                    } else {
-                        Button("Charger") {
-                            Task { await localLLM.prepareIfNeeded() }
-                        }
-                        .font(.caption)
-                        .disabled(localLLM.isUserDisabled)
-                    }
-                }
-            }
-
-            if let error = localLLM.lastError {
-                Text(error)
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-            }
-
-            Text("Le premier usage d'un nouveau modèle déclenche un téléchargement de plusieurs Go.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
 
     private var updateSection: some View {
         VStack(alignment: .leading, spacing: 6) {

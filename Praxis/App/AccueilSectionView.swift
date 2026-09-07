@@ -3,9 +3,8 @@ import SwiftData
 
 /// "Accueil" — new dashboard, first thing Pierre sees, answering "où j'en étais, qu'est-ce
 /// qui presse" per the design handoff. Everything here is derived from existing @Query
-/// data (no new SwiftData model). The Q&A-per-course entry point (Chantier C) lives here,
-/// on each course cell, rather than as its own sidebar section — the course is already
-/// known from the tapped cell, so no cascade course picker is needed.
+/// data (no new SwiftData model). Course cells navigate to the task list filtered on that
+/// course; the Q&A-per-course entry point they also carried is gone with the local model.
 struct AccueilSectionView: View {
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @EnvironmentObject private var localLLM: LocalLLMCoordinator
@@ -23,7 +22,6 @@ struct AccueilSectionView: View {
     private var openTasks: [PraxisTask]
 
     @State private var isTriagePresented = false
-    @State private var courseForQuestion: CourseSummary?
     @State private var editingTask: PraxisTask?
 
     var body: some View {
@@ -56,10 +54,6 @@ struct AccueilSectionView: View {
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)
-        }
-        .sheet(item: $courseForQuestion) { course in
-            CourseQuestionView(courseVaultPath: course.vaultPath, displayName: course.displayName)
-                .environmentObject(localLLM)
         }
         .sheet(item: $editingTask) { task in
             TaskFormSheet(existingTask: task, availableCourses: CourseDirectoryScanner.scan())
@@ -134,9 +128,9 @@ struct AccueilSectionView: View {
             } else {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(courseSummaries) { course in
-                        // Primary action is navigation (Pierre's ask: go to the task list
-                        // filtered on this course). Q&A keeps its own affordance rather
-                        // than owning the whole cell like it did before.
+                        // Navigates to the task list filtered on this course. The per-course
+                        // Q&A button that used to sit here is gone with the local model
+                        // (see LocalLLMCoordinator.isAvailable).
                         HStack(spacing: 6) {
                             Button {
                                 taskCourseFilter = course.vaultPath
@@ -156,14 +150,6 @@ struct AccueilSectionView: View {
                             .buttonStyle(.plain)
                             .help("Voir les tâches de ce cours")
 
-                            Button {
-                                courseForQuestion = course
-                            } label: {
-                                Image(systemName: "questionmark.circle")
-                                    .foregroundStyle(Color.praxisAccent)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Poser une question sur ce cours")
                         }
                         .padding(10)
                         .background(Color.gray.opacity(0.06))
@@ -218,64 +204,3 @@ private struct CourseSummary: Identifiable {
     var id: String { vaultPath }
 }
 
-/// Chantier C: Q&A against a course's saved files, no live recording required. The course
-/// is already known (the dashboard cell that was tapped), so this skips rebuilding the
-/// Année→Pôle→Cours cascade selector — just a question field and a Markdown answer.
-private struct CourseQuestionView: View {
-    @EnvironmentObject private var localLLM: LocalLLMCoordinator
-    @Environment(\.dismiss) private var dismiss
-    let courseVaultPath: String
-    let displayName: String
-
-    @State private var question = ""
-    @State private var answer = ""
-    @State private var isAsking = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Question — \(displayName)").font(.title3)
-                Spacer()
-                Button("Fermer") { dismiss() }
-            }
-
-            HStack {
-                TextField("Poser une question sur ce cours…", text: $question)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(ask)
-                Button(isAsking ? "…" : "Envoyer") { ask() }
-                    .disabled(question.trimmingCharacters(in: .whitespaces).isEmpty || isAsking || localLLM.isUserDisabled)
-            }
-
-            if localLLM.isUserDisabled {
-                Text("IA locale désactivée (dans Réglages).")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-
-            ScrollView {
-                Text(answer.isEmpty ? "La réponse apparaîtra ici." : answer)
-                    .font(.callout)
-                    .foregroundStyle(answer.isEmpty ? .tertiary : .primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-            }
-            .background(Color.gray.opacity(0.05))
-            .cornerRadius(8)
-            .frame(minHeight: 200)
-        }
-        .padding()
-        .frame(width: 460, height: 380)
-    }
-
-    private func ask() {
-        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        Task {
-            isAsking = true
-            defer { isAsking = false }
-            answer = await localLLM.askCourseQuestion(courseVaultPath: courseVaultPath, question: trimmed)
-                ?? "Erreur lors de la génération de la réponse."
-        }
-    }
-}
