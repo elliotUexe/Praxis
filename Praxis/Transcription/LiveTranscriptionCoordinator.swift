@@ -26,6 +26,12 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var refinedStarts: Set<Float> = []
     private var checkpointTimer: Timer?
     private var currentOutputURL: URL?
+    /// Where the live transcript is written, next to the WAV and with the same base name,
+    /// so a live session and an imported file produce the same pair of artifacts. Unlike
+    /// `currentOutputURL` this is deliberately NOT cleared on `stop()`: refinement jobs
+    /// finish asynchronously and can still improve segments after the session ended, and
+    /// they must be able to rewrite the file. It's reset on the next `start()`.
+    private var transcriptURL: URL?
 
     func prepare(
         liveModelName: String = "large-v3-v20240930_turbo",
@@ -85,6 +91,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         refinedStarts = []
         lastError = nil
         currentOutputURL = outputURL
+        transcriptURL = OutputFileManager.txtURL(
+            in: outputURL.deletingLastPathComponent(),
+            baseName: outputURL.deletingPathExtension().lastPathComponent
+        )
 
         let decodingOptions = DecodingOptions(
             task: .transcribe,
@@ -130,6 +140,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         if let url = currentOutputURL {
             writeCheckpointWAV(to: url)
         }
+        writeTranscript()
         currentOutputURL = nil
 
         await audioStreamTranscriber?.stopStreamTranscription()
@@ -164,8 +175,27 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             Task { @MainActor in
                 guard let self, let url = self.currentOutputURL else { return }
                 self.writeCheckpointWAV(to: url)
+                self.writeTranscript()
             }
         }
+    }
+
+    /// Persists the transcript next to the WAV. Called on every 10s checkpoint, on
+    /// `stop()`, and again whenever a late refinement lands, so a crash costs at most one
+    /// checkpoint of text instead of the whole session — which is exactly what was lost on
+    /// 2026-09-07, when three recordings produced WAVs and no transcript at all because
+    /// nothing on the live path ever wrote one.
+    ///
+    /// Rewrites the whole file each time rather than appending: segments are mutated in
+    /// place by the refinement pass, so an append-only file would keep the rough first
+    /// pass forever. Writing nothing while the transcript is empty avoids littering course
+    /// folders with empty files when a recording captures no speech.
+    private func writeTranscript() {
+        guard let transcriptURL, !displaySegments.isEmpty else { return }
+        let text = displaySegments
+            .map { OutputFileManager.transcriptLine(start: $0.start, text: $0.text) }
+            .joined(separator: "\n")
+        try? text.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 
     private func writeCheckpointWAV(to url: URL) {
@@ -229,6 +259,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
                 guard let idx = self.displaySegments.firstIndex(where: { $0.start == segment.start }) else { return }
                 self.displaySegments[idx].text = refinedText
                 self.displaySegments[idx].isRefined = true
+                // Refinements routinely land after the session was stopped, when the
+                // checkpoint timer is already gone. Without this the saved file would keep
+                // the rough first-pass text for the tail of every recording.
+                self.writeTranscript()
             }
         }
     }

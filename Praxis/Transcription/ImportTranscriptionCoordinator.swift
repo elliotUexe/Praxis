@@ -64,8 +64,8 @@ final class ImportTranscriptionCoordinator: ObservableObject {
                 return true
             }
 
-            let lines = results.flatMap(\.segments).map { segment in
-                "[\(Self.formatTimestamp(segment.start))] : \(segment.text.trimmingCharacters(in: .whitespaces))"
+            let lines = results.flatMap(\.segments).map {
+                OutputFileManager.transcriptLine(start: $0.start, text: $0.text)
             }
 
             let baseName = fileURL.deletingPathExtension().lastPathComponent
@@ -82,11 +82,4 @@ final class ImportTranscriptionCoordinator: ObservableObject {
         isTranscribing = false
     }
 
-    private static func formatTimestamp(_ seconds: Float) -> String {
-        let total = Int(seconds)
-        let hours = total / 3600
-        let minutes = (total % 3600) / 60
-        let secs = total % 60
-        return String(format: "%d:%02d:%02d", hours, minutes, secs)
-    }
 }
