@@ -14,6 +14,7 @@ struct RecordingSectionView: View {
     @State private var isFileImporterPresented = false
     @State private var isDropTargeted = false
     @State private var selectedTab: RecordingTab = .transcription
+    @StateObject private var transcriptSelection = TranscriptSelectionModel()
 
     private enum RecordingTab: String, CaseIterable {
         case transcription = "Transcription"
@@ -288,12 +289,61 @@ struct RecordingSectionView: View {
             segments: Array(visibleSegments),
             flags: transcription.flags,
             unconfirmedText: transcription.unconfirmedText,
-            hiddenSegmentCount: hiddenSegmentCount
+            hiddenSegmentCount: hiddenSegmentCount,
+            selection: transcriptSelection
         )
+        .overlay(alignment: .topLeading) { flagPill }
         .frame(minHeight: 150)
         .frame(maxHeight: .infinity)
         .background(Color.gray.opacity(0.08))
         .cornerRadius(8)
+    }
+
+    /// Floats over the selection rather than living in the toolbar: the gesture is
+    /// "select the bad passage, confirm", and a button on the other side of the window
+    /// would break that into two unrelated movements.
+    @ViewBuilder
+    private var flagPill: some View {
+        if transcriptSelection.action != .none {
+            GeometryReader { geometry in
+                let size = CGSize(width: 108, height: 22)
+                let anchor = transcriptSelection.anchor
+                let above = anchor.minY - size.height / 2 - 6
+                Button(action: applyFlagAction) {
+                    Label(
+                        transcriptSelection.action == .add ? "Signaler" : "Retirer",
+                        systemImage: transcriptSelection.action == .add ? "exclamationmark.triangle" : "xmark.circle"
+                    )
+                    .font(.caption)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .frame(width: size.width, height: size.height)
+                .position(
+                    // Kept inside the transcript on both axes: a selection on the first
+                    // line puts the pill below instead of off the top edge, and one at the
+                    // right margin slides back in rather than being clipped.
+                    x: min(max(anchor.midX, size.width / 2), max(size.width / 2, geometry.size.width - size.width / 2)),
+                    y: above > size.height / 2 ? above : anchor.maxY + size.height / 2 + 6
+                )
+            }
+        }
+    }
+
+    private func applyFlagAction() {
+        switch transcriptSelection.action {
+        case .add:
+            for target in transcriptSelection.targets {
+                transcription.flag(segmentStart: target.segmentStart, substring: target.substring)
+            }
+        case .remove:
+            for target in transcriptSelection.targets {
+                transcription.unflag(segmentStart: target.segmentStart, substring: target.substring)
+            }
+        case .none:
+            break
+        }
+        transcriptSelection.dismissAndDeselect()
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {

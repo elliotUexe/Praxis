@@ -41,6 +41,11 @@ enum TranscriptMarkup {
     /// The character ranges a segment's flags cover, sorted and with overlaps merged.
     /// Shared by the file writer and the on-screen highlight so the two can never disagree
     /// about what is marked.
+    ///
+    /// A flag records wording rather than an offset, so when the same wording appears twice
+    /// in one segment the mark lands on the first occurrence. Distinguishing the two would
+    /// mean an anchor that survives the refinement pass rewriting the segment, which is the
+    /// very thing offsets cannot do.
     static func flaggedRanges(in text: String, flags: [TranscriptFlag]) -> [Range<String.Index>] {
         guard !flags.isEmpty, !text.isEmpty else { return [] }
         // A whole-segment flag subsumes every partial one on the same segment.
