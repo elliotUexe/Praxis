@@ -17,6 +17,13 @@ enum OutputFileManager {
         folder.appendingPathComponent(baseName).appendingPathExtension("txt")
     }
 
+    /// Where a finished recording ends up once `AudioCompressor` has encoded it. Same base
+    /// name as the WAV it replaces and as the transcript beside it, so the pair stays
+    /// obvious in a course folder.
+    static func m4aURL(in folder: URL, baseName: String) -> URL {
+        folder.appendingPathComponent(baseName).appendingPathExtension("m4a")
+    }
+
     /// `[H:MM:SS]` prefix used by both transcript paths. Shared so a transcript written
     /// live and one written by importing an audio file are byte-for-byte the same shape —
     /// they land in the same `Transcriptions/` folders and are read by the same eyes.

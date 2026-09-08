@@ -46,6 +46,8 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var wavFile: AVAudioFile?
     /// How many samples of `audioProcessor.audioSamples` have already reached `wavFile`.
     private var writtenSampleCount = 0
+    /// Kept for `stop()`, which hands it to `AudioCompressor` once the file is closed.
+    private var sessionWAVURL: URL?
 
     func prepare(
         liveModelName: String = "large-v3-v20240930_turbo",
@@ -154,10 +156,16 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         checkpointTimer?.invalidate()
         checkpointTimer = nil
         appendNewSamplesToWAV()
-        // Releasing the last reference closes the file and finalises the WAV header.
+        // Releasing the last reference closes the file and finalises the WAV header, which
+        // has to happen before anything reads the file back.
         wavFile = nil
         writtenSampleCount = 0
         writeTranscript()
+
+        if let wavURL = sessionWAVURL {
+            sessionWAVURL = nil
+            compressRecording(at: wavURL)
+        }
 
         await audioStreamTranscriber?.stopStreamTranscription()
         streamTask?.cancel()
@@ -245,6 +253,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// 1h24 course that meant copying and rewriting 160 MB every ten seconds, tens of GB
     /// of SSD writes to produce a single 160 MB file.
     private func openWAVFile(at url: URL) {
+        sessionWAVURL = url
         wavFile = try? AVAudioFile(
             forWriting: url,
             settings: Self.wavSettings,
@@ -296,6 +305,22 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             writtenSampleCount = total
         } catch {
             lastError = "Erreur d'écriture audio : \(error.localizedDescription)"
+        }
+    }
+
+    /// Hands the finished WAV to the encoder off the main actor: about three seconds of
+    /// work for a 90-minute lecture, which on the main actor would be three seconds of
+    /// frozen interface at the end of every course. The WAV survives a failure, so the
+    /// worst case is a recording that stayed large.
+    private func compressRecording(at wavURL: URL) {
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                try AudioCompressor.compressToM4A(wavURL: wavURL)
+            } catch {
+                await MainActor.run {
+                    self?.lastError = "Compression audio impossible, l'enregistrement reste en WAV : \(error.localizedDescription)"
+                }
+            }
         }
     }
 
