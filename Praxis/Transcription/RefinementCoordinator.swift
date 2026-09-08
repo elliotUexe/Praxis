@@ -7,16 +7,17 @@ import WhisperKit
 actor RefinementCoordinator {
     private var whisperKit: WhisperKit?
 
+    /// No `ModelComputeOptions` override on purpose: forcing `.cpuAndGPU` on all three
+    /// stages kept this model off the Neural Engine, which does the same work for a
+    /// fraction of the power, and put it in direct GPU contention with everything else
+    /// during a recording. WhisperKit's own defaults are tuned per device and are what the
+    /// live model in `LiveTranscriptionCoordinator` has always used without trouble, so
+    /// refinement now behaves the same way. Expect a slower first load while CoreML
+    /// compiles the model for the ANE; that cost is one-off and cached.
     func prepare(modelName: String = "large-v3-v20240930_626MB") async throws {
         guard whisperKit == nil else { return }
-        let computeOptions = ModelComputeOptions(
-            melCompute: .cpuAndGPU,
-            audioEncoderCompute: .cpuAndGPU,
-            textDecoderCompute: .cpuAndGPU
-        )
         whisperKit = try await WhisperKit(WhisperKitConfig(
             model: modelName,
-            computeOptions: computeOptions,
             load: true
         ))
     }
