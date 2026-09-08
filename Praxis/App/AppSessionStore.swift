@@ -37,7 +37,13 @@ final class AppSessionStore: ObservableObject {
     @Published private(set) var availableCourses: [CourseOption] = []
 
     private var timer: Timer?
+    /// Start of the *current* running stretch, nil while paused. The chrono is not plain
+    /// wall-clock time since the session began: the audio processor stops appending samples
+    /// while paused, so a wall-clock chrono would drift ahead of the recording it labels.
     private var sessionStart: Date?
+    /// Seconds accumulated by the stretches that already ended, i.e. everything before the
+    /// current `sessionStart`.
+    private var accumulatedSeconds: TimeInterval = 0
     private var outputFolder: URL?
 
     init() {
@@ -73,6 +79,7 @@ final class AppSessionStore: ObservableObject {
         currentRecordingURL = wavURL
         recordingState = .recording
         sessionStart = Date()
+        accumulatedSeconds = 0
         elapsedSeconds = 0
         startTimer()
         return wavURL
@@ -81,11 +88,20 @@ final class AppSessionStore: ObservableObject {
     func pauseRecording() {
         guard recordingState == .recording else { return }
         recordingState = .paused
+        if let start = sessionStart {
+            accumulatedSeconds += Date().timeIntervalSince(start)
+        }
+        sessionStart = nil
+        elapsedSeconds = accumulatedSeconds
+        timer?.invalidate()
+        timer = nil
     }
 
     func resumeRecording() {
         guard recordingState == .paused else { return }
         recordingState = .recording
+        sessionStart = Date()
+        startTimer()
     }
 
     func stopRecording() {
@@ -94,6 +110,7 @@ final class AppSessionStore: ObservableObject {
         timer?.invalidate()
         timer = nil
         sessionStart = nil
+        accumulatedSeconds = 0
         elapsedSeconds = 0
         currentRecordingURL = nil
     }
@@ -131,7 +148,7 @@ final class AppSessionStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, let start = self.sessionStart else { return }
-                self.elapsedSeconds = Date().timeIntervalSince(start)
+                self.elapsedSeconds = self.accumulatedSeconds + Date().timeIntervalSince(start)
             }
         }
     }
