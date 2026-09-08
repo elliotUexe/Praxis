@@ -31,13 +31,17 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// 629 of 2901 samples inside `ingest` when profiling a 1h24 recording.
     private var ingestedStarts: Set<Float> = []
     private var checkpointTimer: Timer?
-    private var currentOutputURL: URL?
     /// Where the live transcript is written, next to the WAV and with the same base name,
     /// so a live session and an imported file produce the same pair of artifacts. Unlike
-    /// `currentOutputURL` this is deliberately NOT cleared on `stop()`: refinement jobs
-    /// finish asynchronously and can still improve segments after the session ended, and
-    /// they must be able to rewrite the file. It's reset on the next `start()`.
+    /// the audio file this is deliberately NOT released on `stop()`: refinement jobs finish
+    /// asynchronously and can still improve segments after the session ended, and they must
+    /// be able to rewrite the file. It's reset on the next `start()`.
     private var transcriptURL: URL?
+    /// Held open for the whole session so each checkpoint appends its delta instead of
+    /// recreating the file. Nil until `start()` opens it, and released in `stop()`.
+    private var wavFile: AVAudioFile?
+    /// How many samples of `audioProcessor.audioSamples` have already reached `wavFile`.
+    private var writtenSampleCount = 0
 
     func prepare(
         liveModelName: String = "large-v3-v20240930_turbo",
@@ -97,11 +101,11 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         refinedStarts = []
         ingestedStarts = []
         lastError = nil
-        currentOutputURL = outputURL
         transcriptURL = OutputFileManager.txtURL(
             in: outputURL.deletingLastPathComponent(),
             baseName: outputURL.deletingPathExtension().lastPathComponent
         )
+        openWAVFile(at: outputURL)
 
         let decodingOptions = DecodingOptions(
             task: .transcribe,
@@ -144,11 +148,11 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     func stop() async {
         checkpointTimer?.invalidate()
         checkpointTimer = nil
-        if let url = currentOutputURL {
-            writeCheckpointWAV(to: url)
-        }
+        appendNewSamplesToWAV()
+        // Releasing the last reference closes the file and finalises the WAV header.
+        wavFile = nil
+        writtenSampleCount = 0
         writeTranscript()
-        currentOutputURL = nil
 
         await audioStreamTranscriber?.stopStreamTranscription()
         streamTask?.cancel()
@@ -175,13 +179,13 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private func restartCheckpointTimer() {
         // WhisperKit's AudioProcessor is the sole mic tap for live sessions (see
         // AppSessionStore.beginRecordingSession). It keeps the full session's audio in
-        // `audioSamples`; periodically snapshot it to disk so a crash loses at most one
-        // checkpoint interval instead of the whole session.
+        // `audioSamples`; periodically flush the new tail to disk so a crash loses at most
+        // one checkpoint interval instead of the whole session.
         checkpointTimer?.invalidate()
         checkpointTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, let url = self.currentOutputURL else { return }
-                self.writeCheckpointWAV(to: url)
+                guard let self else { return }
+                self.appendNewSamplesToWAV()
                 self.writeTranscript()
             }
         }
@@ -205,40 +209,73 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         try? text.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 
-    private func writeCheckpointWAV(to url: URL) {
-        guard let whisperKit else { return }
-        let samples = Array(whisperKit.audioProcessor.audioSamples)
-        guard !samples.isEmpty else { return }
+    private static let wavSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatLinearPCM,
+        AVSampleRateKey: Double(WhisperKit.sampleRate),
+        AVNumberOfChannelsKey: 1,
+        AVLinearPCMBitDepthKey: 16,
+        AVLinearPCMIsFloatKey: false,
+        AVLinearPCMIsBigEndianKey: false
+    ]
 
+    /// Opened once per session and appended to. The previous implementation recreated the
+    /// file with `AVAudioFile(forWriting:)` on every 10s checkpoint, which truncates and
+    /// rewrites it whole, after copying the entire sample buffer: at the 160 MB mark of a
+    /// 1h24 course that meant copying and rewriting 160 MB every ten seconds, tens of GB
+    /// of SSD writes to produce a single 160 MB file.
+    private func openWAVFile(at url: URL) {
+        wavFile = try? AVAudioFile(
+            forWriting: url,
+            settings: Self.wavSettings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        writtenSampleCount = 0
+        if wavFile == nil {
+            lastError = "Impossible de créer le fichier audio."
+        }
+    }
+
+    /// Appends only what arrived since the last checkpoint, so the cost is proportional to
+    /// the ten seconds added rather than to the whole session. Deliberately kept on the
+    /// main actor: once the write is ~640 KB instead of 160 MB it costs about a
+    /// millisecond, and staying here avoids racing another writer on the same file handle.
+    private func appendNewSamplesToWAV() {
+        guard let whisperKit, let file = wavFile else { return }
+        let samples = whisperKit.audioProcessor.audioSamples
+        let total = samples.count
+
+        // The buffer is expected to grow monotonically and to survive pause/resume (see
+        // `resume()`). If it ever shrinks it was reset underneath us, and appending would
+        // splice unrelated audio together — better to stop writing than to produce a file
+        // that silently misrepresents the session.
+        guard total >= writtenSampleCount else {
+            lastError = "Tampon audio réinitialisé, l'enregistrement peut être incomplet."
+            wavFile = nil
+            return
+        }
+        guard total > writtenSampleCount else { return }
+
+        let newSamples = Array(samples[writtenSampleCount..<total])
         guard let floatFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: Double(WhisperKit.sampleRate),
             channels: 1,
             interleaved: false
-        ), let buffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: AVAudioFrameCount(samples.count)) else {
+        ), let buffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: AVAudioFrameCount(newSamples.count)) else {
             return
         }
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        samples.withUnsafeBufferPointer { ptr in
-            buffer.floatChannelData?[0].update(from: ptr.baseAddress!, count: samples.count)
+        buffer.frameLength = AVAudioFrameCount(newSamples.count)
+        newSamples.withUnsafeBufferPointer { ptr in
+            buffer.floatChannelData?[0].update(from: ptr.baseAddress!, count: newSamples.count)
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVSampleRateKey: Double(WhisperKit.sampleRate),
-            AVNumberOfChannelsKey: 1,
-            AVLinearPCMBitDepthKey: 16,
-            AVLinearPCMIsFloatKey: false,
-            AVLinearPCMIsBigEndianKey: false
-        ]
-
-        guard let file = try? AVAudioFile(
-            forWriting: url,
-            settings: settings,
-            commonFormat: .pcmFormatFloat32,
-            interleaved: false
-        ) else { return }
-        try? file.write(from: buffer)
+        do {
+            try file.write(from: buffer)
+            writtenSampleCount = total
+        } catch {
+            lastError = "Erreur d'écriture audio : \(error.localizedDescription)"
+        }
     }
 
     private func ingest(confirmedSegments: [TranscriptionSegment]) {
