@@ -14,6 +14,10 @@ struct DisplaySegment: Identifiable, Equatable {
 final class LiveTranscriptionCoordinator: ObservableObject {
     @Published private(set) var displaySegments: [DisplaySegment] = []
     @Published private(set) var unconfirmedText: String = ""
+    /// Passages marked as unreliable during the lecture. Owned here rather than by the view
+    /// for the same reason `displaySegments` is: the view is thrown away and rebuilt
+    /// constantly, and these have to reach `writeTranscript()`.
+    @Published private(set) var flags: [TranscriptFlag] = []
     @Published private(set) var isReady = false
     @Published private(set) var isRefiningReady = false
     @Published private(set) var isLoadingModel = false
@@ -100,6 +104,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         unconfirmedText = ""
         refinedStarts = []
         ingestedStarts = []
+        flags = []
         lastError = nil
         transcriptURL = OutputFileManager.txtURL(
             in: outputURL.deletingLastPathComponent(),
@@ -191,6 +196,23 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         }
     }
 
+    /// Marks a passage as unreliable. `substring` is the exact wording covered, or nil to
+    /// cover the whole segment. Writing immediately rather than waiting for the next
+    /// checkpoint keeps the gesture honest: a mark you made is a mark that is on disk.
+    func flag(segmentStart: Float, substring: String?) {
+        let flag = TranscriptFlag(segmentStart: segmentStart, substring: substring)
+        guard !flags.contains(flag) else { return }
+        flags.append(flag)
+        writeTranscript()
+    }
+
+    func unflag(segmentStart: Float, substring: String?) {
+        let flag = TranscriptFlag(segmentStart: segmentStart, substring: substring)
+        guard let index = flags.firstIndex(of: flag) else { return }
+        flags.remove(at: index)
+        writeTranscript()
+    }
+
     /// Persists the transcript next to the WAV. Called on every 10s checkpoint, on
     /// `stop()`, and again whenever a late refinement lands, so a crash costs at most one
     /// checkpoint of text instead of the whole session — which is exactly what was lost on
@@ -203,9 +225,8 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// folders with empty files when a recording captures no speech.
     private func writeTranscript() {
         guard let transcriptURL, !displaySegments.isEmpty else { return }
-        let text = displaySegments
-            .map { OutputFileManager.transcriptLine(start: $0.start, text: $0.text) }
-            .joined(separator: "\n")
+        let entries = displaySegments.map { TranscriptEntry(start: $0.start, text: $0.text) }
+        let text = TranscriptMarkup.document(entries: entries, flags: flags)
         try? text.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 
@@ -304,11 +325,19 @@ final class LiveTranscriptionCoordinator: ObservableObject {
                 guard let idx = self.displaySegments.firstIndex(where: { $0.start == segment.start }) else { return }
                 self.displaySegments[idx].text = refinedText
                 self.displaySegments[idx].isRefined = true
+                // The rewrite just moved the ground under any flag on this segment.
+                self.relocateFlags(onSegment: segment.start, in: refinedText)
                 // Refinements routinely land after the session was stopped, when the
                 // checkpoint timer is already gone. Without this the saved file would keep
                 // the rough first-pass text for the tail of every recording.
                 self.writeTranscript()
             }
+        }
+    }
+
+    private func relocateFlags(onSegment start: Float, in newText: String) {
+        for index in flags.indices where flags[index].segmentStart == start {
+            flags[index] = TranscriptMarkup.relocated(flags[index], in: newText)
         }
     }
 

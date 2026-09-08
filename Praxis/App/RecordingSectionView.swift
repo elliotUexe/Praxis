@@ -284,33 +284,12 @@ struct RecordingSectionView: View {
     }
 
     private var transcriptionScrollView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 4) {
-                if hiddenSegmentCount > 0 {
-                    Text("\(hiddenSegmentCount) segment\(hiddenSegmentCount > 1 ? "s" : "") plus ancien\(hiddenSegmentCount > 1 ? "s" : "") — texte complet dans le fichier .txt")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                ForEach(visibleSegments) { segment in
-                    HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(segment.text)
-                            .foregroundStyle(.primary)
-                        if !segment.isRefined {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .help("En attente de raffinement")
-                        }
-                    }
-                }
-                if !transcription.unconfirmedText.isEmpty {
-                    Text(transcription.unconfirmedText)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(8)
-        }
+        TranscriptTextView(
+            segments: Array(visibleSegments),
+            flags: transcription.flags,
+            unconfirmedText: transcription.unconfirmedText,
+            hiddenSegmentCount: hiddenSegmentCount
+        )
         .frame(minHeight: 150)
         .frame(maxHeight: .infinity)
         .background(Color.gray.opacity(0.08))
