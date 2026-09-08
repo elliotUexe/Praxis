@@ -24,6 +24,12 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var audioStreamTranscriber: AudioStreamTranscriber?
     private var streamTask: Task<Void, Never>?
     private var refinedStarts: Set<Float> = []
+    /// Starts already turned into a `DisplaySegment`. WhisperKit hands back the *whole*
+    /// confirmed list on every callback, not a delta, so the previous membership test
+    /// (`displaySegments.contains(where:)`) was a linear scan run once per incoming
+    /// segment: quadratic in session length, several times per second. It showed up as
+    /// 629 of 2901 samples inside `ingest` when profiling a 1h24 recording.
+    private var ingestedStarts: Set<Float> = []
     private var checkpointTimer: Timer?
     private var currentOutputURL: URL?
     /// Where the live transcript is written, next to the WAV and with the same base name,
@@ -89,6 +95,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         displaySegments = []
         unconfirmedText = ""
         refinedStarts = []
+        ingestedStarts = []
         lastError = nil
         currentOutputURL = outputURL
         transcriptURL = OutputFileManager.txtURL(
@@ -235,7 +242,8 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     }
 
     private func ingest(confirmedSegments: [TranscriptionSegment]) {
-        for segment in confirmedSegments where !displaySegments.contains(where: { $0.start == segment.start }) {
+        for segment in confirmedSegments where !ingestedStarts.contains(segment.start) {
+            ingestedStarts.insert(segment.start)
             displaySegments.append(DisplaySegment(
                 start: segment.start,
                 end: segment.end,
