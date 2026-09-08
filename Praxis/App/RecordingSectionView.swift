@@ -264,10 +264,34 @@ struct RecordingSectionView: View {
 
 
 
+    /// Only the tail of the transcript is handed to SwiftUI. This `VStack` lays out every
+    /// child on every update, and updates fire several times per second while someone is
+    /// speaking, so the layout cost grew linearly with session length: sampling a real
+    /// 1h24 course showed the app pegged at 119% CPU with the main thread almost entirely
+    /// inside `sizeThatFits`. Capping the rendered window makes that cost constant.
+    ///
+    /// `transcription.displaySegments` itself stays complete on purpose — it is the source
+    /// of truth for the `.txt` written next to the WAV, so trimming it would silently
+    /// truncate every saved transcript.
+    private static let visibleSegmentLimit = 100
+
+    private var visibleSegments: ArraySlice<DisplaySegment> {
+        transcription.displaySegments.suffix(Self.visibleSegmentLimit)
+    }
+
+    private var hiddenSegmentCount: Int {
+        max(0, transcription.displaySegments.count - Self.visibleSegmentLimit)
+    }
+
     private var transcriptionScrollView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 4) {
-                ForEach(transcription.displaySegments) { segment in
+                if hiddenSegmentCount > 0 {
+                    Text("\(hiddenSegmentCount) segment\(hiddenSegmentCount > 1 ? "s" : "") plus ancien\(hiddenSegmentCount > 1 ? "s" : "") — texte complet dans le fichier .txt")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                ForEach(visibleSegments) { segment in
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(segment.text)
                             .foregroundStyle(.primary)
