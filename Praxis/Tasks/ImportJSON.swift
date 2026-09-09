@@ -32,14 +32,15 @@ struct PendingTaskCreation: Decodable {
     }()
 
     func apply(to task: PraxisTask) {
-        if let dueDate, let date = Self.dateFormatter.date(from: dueDate) {
-            task.dueDate = date
-        }
         task.estimatedDurationMinutes = estimatedDurationMinutes
         task.blockedReason = blockedReason
         task.waitingOn = waitingOn
-        if let horizonDate, let date = Self.dateFormatter.date(from: horizonDate) {
-            task.horizonDate = date
+        // Both JSON keys land in `dueDate`: since 0.4 that is the only date a task has, and
+        // `horizonDate` is a migration leftover nothing reads. Writing there would have made
+        // an imported anticipation show up as undated. `dueDate` wins when a batch sends
+        // both. The key is still accepted so batches written against the old schema import.
+        if let raw = dueDate ?? horizonDate, let date = Self.dateFormatter.date(from: raw) {
+            task.dueDate = date
         }
     }
 }
@@ -74,10 +75,10 @@ struct PendingFieldChanges: Decodable {
     /// `fieldChanges` keeps its current value, it is never reset to nil by omission.
     func apply(to task: PraxisTask) {
         if let title { task.title = title }
-        if let dueDate { task.dueDate = Self.dateFormatter.date(from: dueDate) }
         if let estimatedDurationMinutes { task.estimatedDurationMinutes = estimatedDurationMinutes }
         if let blockedReason { task.blockedReason = blockedReason }
         if let waitingOn { task.waitingOn = waitingOn }
-        if let horizonDate { task.horizonDate = Self.dateFormatter.date(from: horizonDate) }
+        // Same single destination as a creation; see `ImportedTaskJSON.apply(to:)`.
+        if let raw = dueDate ?? horizonDate { task.dueDate = Self.dateFormatter.date(from: raw) }
     }
 }

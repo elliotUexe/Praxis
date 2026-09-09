@@ -71,11 +71,14 @@ enum TaskMarkdownExporter {
         let checkbox = task.isDone ? "- [x]" : "- [ ]"
         var text = "\(checkbox) \(task.title)"
 
+        // Emitted for every type now that every type can be dated, and taken from the
+        // effective date so a dossier exports under the milestone that actually governs it.
+        if let due = task.effectiveDueDate {
+            text += " 📅 \(dateFormatter.string(from: due))"
+        }
+
         switch task.type {
         case .rendu:
-            if let due = task.dueDate {
-                text += " 📅 \(dateFormatter.string(from: due))"
-            }
             text += " #rendu"
         case .revisionFond:
             if let minutes = task.estimatedDurationMinutes {
@@ -93,9 +96,6 @@ enum TaskMarkdownExporter {
             }
             text += " #blocage"
         case .anticipation:
-            if let horizon = task.horizonDate {
-                text += " ⏳ \(dateFormatter.string(from: horizon))"
-            }
             text += " #anticipation"
         }
         return text

@@ -9,7 +9,9 @@ struct MenuBarContentView: View {
 
     @Query(filter: #Predicate<PraxisTask> { $0.needsReview && !$0.isDone })
     private var needsReviewTasks: [PraxisTask]
-    @Query(filter: #Predicate<PraxisTask> { $0.dueDate != nil && !$0.isDone })
+    /// Not filtered on `dueDate != nil` any more: a task whose only date sits on a subtask
+    /// milestone has none of its own, and would have been invisible here.
+    @Query(filter: #Predicate<PraxisTask> { !$0.isDone && !$0.isRejected })
     private var upcomingDueTasks: [PraxisTask]
 
     var body: some View {
@@ -110,11 +112,11 @@ struct MenuBarContentView: View {
     /// asks for, without growing the popover's fixed 260px width.
     private var contextLine: String {
         let cutoff = Calendar.current.date(byAdding: .day, value: 5, to: Date()) ?? Date()
-        let pressingCount = upcomingDueTasks.filter { $0.type == .rendu && ($0.dueDate ?? .distantFuture) <= cutoff }.count
+        let pressingCount = upcomingDueTasks.filter { ($0.effectiveDueDate ?? .distantFuture) <= cutoff }.count
 
         var parts: [String] = []
         if pressingCount > 0 {
-            parts.append("\(pressingCount) rendu\(pressingCount > 1 ? "s" : "") < 5 jours")
+            parts.append("\(pressingCount) tâche\(pressingCount > 1 ? "s" : "") < 5 jours")
         }
         if !needsReviewTasks.isEmpty {
             parts.append("\(needsReviewTasks.count) à trier")

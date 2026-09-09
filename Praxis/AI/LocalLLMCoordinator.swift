@@ -472,14 +472,14 @@ final class LocalLLMCoordinator: ObservableObject {
         - "revisionFond" : point signalé comme important/difficile à réviser, sans date
         - "revisionDS" : révision explicitement liée à un examen/DS à venir
         - "blocage" : question ou point resté visiblement non résolu
-        - "anticipation" : mention lointaine, non urgente (a éventuellement un `horizonDate`)
+        - "anticipation" : mention lointaine, non urgente
 
         Ignore le bavardage et les généralités. Ne garde que les tâches concrètes et réellement énoncées — s'il n'y en a aucune, réponds avec une liste vide.
 
         Réponds UNIQUEMENT avec un JSON valide de cette forme exacte, sans texte autour, sans balises markdown :
         {"tasks": [{"type": "rendu", "title": "...", "detail": "...", "dueDate": "AAAA-MM-JJ"}]}
 
-        Champs optionnels selon le type : "dueDate" (rendu), "estimatedDurationMinutes" (revisionFond/revisionDS), "blockedReason" et "waitingOn" (blocage), "horizonDate" (anticipation).
+        Champs optionnels : "dueDate" (tous les types), "estimatedDurationMinutes" (revisionFond/revisionDS), "blockedReason" et "waitingOn" (blocage).
 
         Extrait :
         ---
@@ -662,8 +662,9 @@ private struct ExtractedTaskCandidate: Decodable {
         task.estimatedDurationMinutes = estimatedDurationMinutes
         task.blockedReason = blockedReason
         task.waitingOn = waitingOn
-        if let horizonDate, let date = Self.dateFormatter.date(from: horizonDate) {
-            task.horizonDate = date
+        // Single destination since 0.4; `horizonDate` is a migration leftover nothing reads.
+        if task.dueDate == nil, let horizonDate, let date = Self.dateFormatter.date(from: horizonDate) {
+            task.dueDate = date
         }
     }
 }
