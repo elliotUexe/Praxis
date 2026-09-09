@@ -45,13 +45,7 @@ final class ImportTranscriptionCoordinator: ObservableObject {
         lastError = nil
         lastOutputURL = nil
 
-        let decodingOptions = DecodingOptions(
-            task: .transcribe,
-            language: "fr",
-            skipSpecialTokens: true,
-            compressionRatioThreshold: 2.4,
-            noSpeechThreshold: 0.6
-        )
+        let decodingOptions = TranscriptionDefaults.decodingOptions()
 
         do {
             let results = try await whisperKit.transcribe(

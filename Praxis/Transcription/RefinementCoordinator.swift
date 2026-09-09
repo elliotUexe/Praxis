@@ -29,13 +29,7 @@ actor RefinementCoordinator {
 
     func refine(samples: [Float]) async throws -> String {
         guard let whisperKit else { return "" }
-        let options = DecodingOptions(
-            task: .transcribe,
-            language: "fr",
-            skipSpecialTokens: true,
-            compressionRatioThreshold: 2.4,
-            noSpeechThreshold: 0.6
-        )
+        let options = TranscriptionDefaults.decodingOptions()
         let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
         return results.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespaces)
     }

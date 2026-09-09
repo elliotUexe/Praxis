@@ -114,13 +114,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         )
         openWAVFile(at: outputURL)
 
-        let decodingOptions = DecodingOptions(
-            task: .transcribe,
-            language: "fr",
-            skipSpecialTokens: true,
-            compressionRatioThreshold: 2.4,
-            noSpeechThreshold: 0.6
-        )
+        let decodingOptions = TranscriptionDefaults.decodingOptions()
 
         let transcriber = AudioStreamTranscriber(
             audioEncoder: whisperKit.audioEncoder,
