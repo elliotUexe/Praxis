@@ -23,8 +23,6 @@ struct TaskFormSheet: View {
     @State private var estimatedDurationMinutes: Int
     @State private var blockedReason: String
     @State private var waitingOn: String
-    @State private var hasHorizonDate: Bool
-    @State private var horizonDate: Date
     @State private var newSubtaskTitle: String = ""
     /// Default duration offered for a new manual subtask — 30 min per Pierre's ask, but
     /// each row (this one included, once added) stays freely editable afterwards via the
@@ -45,8 +43,6 @@ struct TaskFormSheet: View {
         _estimatedDurationMinutes = State(initialValue: existingTask?.estimatedDurationMinutes ?? 60)
         _blockedReason = State(initialValue: existingTask?.blockedReason ?? "")
         _waitingOn = State(initialValue: existingTask?.waitingOn ?? "")
-        _hasHorizonDate = State(initialValue: existingTask?.horizonDate != nil)
-        _horizonDate = State(initialValue: existingTask?.horizonDate ?? Date())
     }
 
     var body: some View {
@@ -81,6 +77,8 @@ struct TaskFormSheet: View {
                 }
                 .font(.caption)
             }
+
+            dateSection
 
             typeSpecificFields
 
@@ -178,6 +176,12 @@ struct TaskFormSheet: View {
         let remainingMinutes = subtasks.filter { !$0.isDone }.map(\.estimatedMinutes).reduce(0, +)
 
         return VStack(alignment: .leading, spacing: 6) {
+            if task.hasSubtaskPastDeadline {
+                Label("Un jalon est daté après l'échéance de la tâche.", systemImage: "exclamationmark.triangle")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            }
+
             HStack {
                 Text("Sous-tâches").font(.caption).foregroundStyle(.secondary)
                 if !subtasks.isEmpty {
@@ -208,6 +212,7 @@ struct TaskFormSheet: View {
                         .strikethrough(subtask.isDone)
                         .foregroundStyle(subtask.isDone ? .secondary : .primary)
                     Spacer()
+                    SubtaskDateButton(subtask: subtask) { taskStore.save() }
                     DurationStepperControl(
                         minutes: subtask.estimatedMinutes,
                         onDecrement: { adjustSubtaskMinutes(subtask, by: -5) },
@@ -284,14 +289,44 @@ struct TaskFormSheet: View {
         taskStore.save()
     }
 
+    /// Offered for every type, which is the point of this release: a DS, a révision and a
+    /// point de blocage can all be dated now. The type only changes what the field is
+    /// called and how the date reads on the row.
+    @ViewBuilder
+    private var dateSection: some View {
+        Toggle(dateToggleLabel, isOn: $hasDueDate)
+        if hasDueDate {
+            DatePicker("", selection: $dueDate, displayedComponents: .date)
+                .labelsHidden()
+            HStack(spacing: 4) {
+                ForEach(TaskScheduling.quickOffsets, id: \.label) { offset in
+                    Button("+\(offset.label)") {
+                        dueDate = TaskScheduling.date(offsetByDays: offset.days)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+                Spacer()
+                Text(TaskScheduling.countdownLabel(for: dueDate))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var dateToggleLabel: String {
+        switch type {
+        case .rendu: return "Date limite"
+        case .revisionDS: return "Date du DS"
+        case .revisionFond: return "À réviser avant le"
+        case .blocage: return "À débloquer avant le"
+        case .anticipation: return "Date indicative"
+        }
+    }
+
     @ViewBuilder
     private var typeSpecificFields: some View {
         switch type {
-        case .rendu:
-            Toggle("Échéance", isOn: $hasDueDate)
-            if hasDueDate {
-                DatePicker("Date limite", selection: $dueDate, displayedComponents: .date)
-            }
         case .revisionFond, .revisionDS:
             Stepper("Durée estimée : \(estimatedDurationMinutes) min", value: $estimatedDurationMinutes, in: 15...480, step: 15)
         case .blocage:
@@ -299,11 +334,8 @@ struct TaskFormSheet: View {
                 .textFieldStyle(.roundedBorder)
             TextField("En attente de…", text: $waitingOn)
                 .textFieldStyle(.roundedBorder)
-        case .anticipation:
-            Toggle("Horizon", isOn: $hasHorizonDate)
-            if hasHorizonDate {
-                DatePicker("Date indicative", selection: $horizonDate, displayedComponents: .date)
-            }
+        case .rendu, .anticipation:
+            EmptyView()
         }
     }
 
@@ -316,11 +348,12 @@ struct TaskFormSheet: View {
 
         task.course = selectedCourseVaultPath.map { taskStore.findOrCreateCourse(vaultPath: $0) }
 
-        task.dueDate = (type == .rendu && hasDueDate) ? dueDate : nil
+        // Unconditional on purpose. Conditioning this on the type is what used to wipe a
+        // date the moment a task was reclassified, silently and without warning.
+        task.dueDate = hasDueDate ? dueDate : nil
         task.estimatedDurationMinutes = (type == .revisionFond || type == .revisionDS) ? estimatedDurationMinutes : nil
         task.blockedReason = (type == .blocage && !blockedReason.isEmpty) ? blockedReason : nil
         task.waitingOn = (type == .blocage && !waitingOn.isEmpty) ? waitingOn : nil
-        task.horizonDate = (type == .anticipation && hasHorizonDate) ? horizonDate : nil
 
         if existingTask == nil {
             taskStore.modelContext.insert(task)
@@ -378,4 +411,68 @@ private struct DurationStepperControl: View {
         formatter.minimum = 5
         return formatter
     }()
+}
+
+/// Compact milestone-date control for one subtask: a calendar glyph when unset, the short
+/// date when set, and the picker itself tucked into a popover. A full `DatePicker` inline
+/// would not fit a row that already carries a title, a duration stepper and two buttons in
+/// a 420pt sheet.
+private struct SubtaskDateButton: View {
+    let subtask: Subtask
+    let onChange: () -> Void
+
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            if let due = subtask.dueDate {
+                Text(due.formatted(.dateTime.day().month(.abbreviated)))
+                    .font(.caption2)
+                    .foregroundStyle(Color.praxisAccent)
+            } else {
+                Image(systemName: "calendar")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(subtask.dueDate == nil ? "Dater ce jalon" : "Modifier la date de ce jalon")
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                DatePicker(
+                    "",
+                    selection: Binding(
+                        get: { subtask.dueDate ?? Date() },
+                        set: { subtask.dueDate = $0; onChange() }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.graphical)
+
+                HStack(spacing: 4) {
+                    ForEach(TaskScheduling.quickOffsets, id: \.label) { offset in
+                        Button("+\(offset.label)") {
+                            subtask.dueDate = TaskScheduling.date(offsetByDays: offset.days)
+                            onChange()
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+
+                if subtask.dueDate != nil {
+                    Button("Retirer la date", role: .destructive) {
+                        subtask.dueDate = nil
+                        onChange()
+                        isPresented = false
+                    }
+                    .controlSize(.small)
+                }
+            }
+            .padding(12)
+        }
+    }
 }

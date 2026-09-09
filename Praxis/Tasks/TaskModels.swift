@@ -57,7 +57,11 @@ final class PraxisTask {
     var updatedAt: Date
     var completedAt: Date?
 
-    // Rendu
+    /// The date of the task, whatever its type. It used to belong to `.rendu` alone, with
+    /// `.anticipation` carrying a second `horizonDate` and the three other types carrying
+    /// none at all — which is why a DS could not be dated, and why changing a task's type
+    /// silently erased its date. One field, for every type; the type now only decides how
+    /// the date is *rendered*, not whether it may exist.
     var dueDate: Date?
 
     // Révision (fond ou DS)
@@ -69,7 +73,9 @@ final class PraxisTask {
     var blockedReason: String?
     var waitingOn: String?
 
-    // Anticipation
+    /// Superseded by `dueDate`. Kept declared so the stored column survives long enough for
+    /// `TaskStoreCoordinator.migrateHorizonDates()` to move its values across; nothing
+    /// writes it any more. Removable once every store has been through a 0.4 launch.
     var horizonDate: Date?
 
     @Relationship(deleteRule: .cascade, inverse: \TaskComment.task)
@@ -81,6 +87,39 @@ final class PraxisTask {
     var type: TaskType {
         get { TaskType(rawValue: typeRaw) ?? .anticipation }
         set { typeRaw = newValue.rawValue }
+    }
+
+    /// Dates of the milestones still to be done. A finished subtask stops steering the
+    /// task, which is what lets a dossier fall back to its final deadline once the draft
+    /// has been sent.
+    var openSubtaskDates: [Date] {
+        subtasks.filter { !$0.isDone }.compactMap(\.dueDate)
+    }
+
+    /// What the task is ranked and filed by. See `TaskScheduling.effectiveDate`.
+    var effectiveDueDate: Date? {
+        TaskScheduling.effectiveDate(taskDate: dueDate, openSubtaskDates: openSubtaskDates)
+    }
+
+    var horizon: TaskHorizon {
+        TaskScheduling.horizon(for: effectiveDueDate)
+    }
+
+    /// True when the effective date comes from a subtask rather than from the task itself,
+    /// so a row can name the milestone that is actually pulling it forward.
+    var isDrivenBySubtask: Bool {
+        guard let effective = effectiveDueDate else { return false }
+        return dueDate.map { effective < $0 } ?? true
+    }
+
+    var nextMilestone: Subtask? {
+        subtasks
+            .filter { !$0.isDone && $0.dueDate != nil }
+            .min { ($0.dueDate ?? .distantFuture) < ($1.dueDate ?? .distantFuture) }
+    }
+
+    var hasSubtaskPastDeadline: Bool {
+        TaskScheduling.hasSubtaskPastDeadline(taskDate: dueDate, openSubtaskDates: openSubtaskDates)
     }
 
     init(
@@ -142,14 +181,19 @@ final class TaskComment {
 
 /// A timed chunk of a macro task — either typed in by hand or accepted from an LLM
 /// proposal (`origin`, same "manuel" | "llm_local" vocabulary as `PraxisTask.origin`).
-/// A dedicated entity rather than a self-referencing `PraxisTask`: none of the type-specific
-/// fields (`dueDate`, `blockedReason`, ...) make sense on a subtask, which only ever needs a
-/// title, a time estimate, and a done/not-done state.
+/// A dedicated entity rather than a self-referencing `PraxisTask`: the type-specific fields
+/// (`blockedReason`, `waitingOn`, ...) make no sense on a subtask, which needs a title, a
+/// time estimate, a done/not-done state — and, since 0.4, an optional milestone date.
 @Model
 final class Subtask {
     @Attribute(.unique) var id: UUID
     var title: String
     var estimatedMinutes: Int
+    /// A milestone date, optional: most subtasks are just steps, some are commitments —
+    /// the draft you send halfway through a dossier. When set, it takes over the parent's
+    /// place in the list until it is ticked off. Inline default so SwiftData
+    /// lightweight-migrates existing rows.
+    var dueDate: Date? = nil
     var isDone: Bool
     var order: Int
     var origin: String
@@ -160,11 +204,13 @@ final class Subtask {
         estimatedMinutes: Int,
         order: Int,
         origin: String = "manuel",
+        dueDate: Date? = nil,
         parentTask: PraxisTask? = nil
     ) {
         self.id = UUID()
         self.title = title
         self.estimatedMinutes = estimatedMinutes
+        self.dueDate = dueDate
         self.isDone = false
         self.order = order
         self.origin = origin

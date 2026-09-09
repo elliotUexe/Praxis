@@ -34,6 +34,7 @@ final class TaskStoreCoordinator: ObservableObject {
             fatalError("Impossible d'initialiser le stockage des tâches Praxis : \(error)")
         }
 
+        migrateHorizonDates()
         scanPendingImports()
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
@@ -48,6 +49,25 @@ final class TaskStoreCoordinator: ObservableObject {
         if let foregroundObserver {
             NotificationCenter.default.removeObserver(foregroundObserver)
         }
+    }
+
+    /// Moves `horizonDate` into `dueDate`, once, at launch. Until 0.4 an "Anticipation"
+    /// kept its date in a second field that nothing else read, so those tasks were invisible
+    /// to every date-based view. Runs on every launch but does nothing after the first: it
+    /// only touches rows that still have a `horizonDate` set, and clears it as it goes.
+    private func migrateHorizonDates() {
+        let descriptor = FetchDescriptor<PraxisTask>(
+            predicate: #Predicate { $0.horizonDate != nil }
+        )
+        guard let stragglers = try? modelContext.fetch(descriptor), !stragglers.isEmpty else { return }
+        for task in stragglers {
+            // An explicit `dueDate` wins: it was always the field the app actually read.
+            if task.dueDate == nil {
+                task.dueDate = task.horizonDate
+            }
+            task.horizonDate = nil
+        }
+        save()
     }
 
     /// Phase 6: picks up JSON batches dropped by an external Claude Code skill into
