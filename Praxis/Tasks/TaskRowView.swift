@@ -19,10 +19,11 @@ struct TaskRowView: View {
 
     @State private var isHovered = false
 
-    private static let dateColumnWidth: CGFloat = 78
+    /// Wide enough for the longest label the column can hold ("Aujourd'hui"), and no wider.
+    private static let dateColumnWidth: CGFloat = 66
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Button(action: onToggleDone) {
                 Image(systemName: task.isDone ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(task.isDone ? Color.praxisAccent : .secondary)
@@ -76,6 +77,11 @@ struct TaskRowView: View {
 
     /// Fixed width whether or not there is a date, so the titles beside it stay aligned and
     /// an undated task reads as a gap in the rail rather than as a shifted line.
+    ///
+    /// Leading-aligned, not trailing. Right-aligning inside a column sized for the longest
+    /// label left every short one ("J-28") pushed away from the checkbox behind a band of
+    /// empty space, and made the left edge ragged. Aligning left gives two clean edges: the
+    /// dates under each other, and the titles all starting at the same x.
     @ViewBuilder
     private var dateColumn: some View {
         Group {
@@ -83,7 +89,7 @@ struct TaskRowView: View {
                 Text(task.completedAt.map { $0.formatted(.dateTime.day().month(.abbreviated)) } ?? "")
                     .foregroundStyle(.tertiary)
             } else if let effective = task.effectiveDueDate {
-                Text(TaskScheduling.countdownLabel(for: effective))
+                Text(TaskScheduling.compactCountdownLabel(for: effective))
                     .foregroundStyle(countdownColor(for: effective))
             } else {
                 Text("—")
@@ -92,7 +98,7 @@ struct TaskRowView: View {
         }
         .font(.caption.weight(.medium))
         .lineLimit(1)
-        .frame(width: Self.dateColumnWidth, alignment: .trailing)
+        .frame(width: Self.dateColumnWidth, alignment: .leading)
     }
 
     private func countdownColor(for date: Date) -> Color {

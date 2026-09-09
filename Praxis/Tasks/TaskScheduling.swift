@@ -82,6 +82,18 @@ enum TaskScheduling {
         return "J-\(days)"
     }
 
+    /// Same countdown, sized for the list's date column. The section header already says
+    /// "En retard" and the row is already red, so the row itself only has to say how late —
+    /// "En retard (J-12)" spends sixteen characters restating its own section, and every
+    /// other row pays for that width in dead space.
+    static func compactCountdownLabel(for date: Date, now: Date = Date()) -> String {
+        let days = daysUntil(date, from: now)
+        if days < 0 { return "Retard \(-days)j" }
+        if days == 0 { return "Aujourd'hui" }
+        if days == 1 { return "Demain" }
+        return "J-\(days)"
+    }
+
     /// A milestone dated after the deadline it is meant to precede. Worth showing rather
     /// than quietly sorting: it means one of the two dates is wrong.
     static func hasSubtaskPastDeadline(taskDate: Date?, openSubtaskDates: [Date]) -> Bool {
