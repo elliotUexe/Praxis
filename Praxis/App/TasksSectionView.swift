@@ -23,6 +23,11 @@ struct TasksSectionView: View {
     @State private var isCreatingTask = false
     @State private var isTriagePresented = false
     @State private var pasteText: String = ""
+    /// Folded sections, seeded from `TaskHorizon.startsCollapsed`. Held as raw values so the
+    /// set survives without `TaskHorizon` needing to be `Hashable` for anything else.
+    @State private var collapsedHorizons: Set<Int> = Set(
+        TaskHorizon.allCases.filter(\.startsCollapsed).map(\.rawValue)
+    )
 
     /// Everything below this point reads `visibleTasks`, never `allTasks` directly, so the
     /// course filter applies uniformly to the list, the counts, and the export menu.
@@ -39,7 +44,7 @@ struct TasksSectionView: View {
             courseFilterBar
             pasteImportRow
             Divider()
-            taskListByType
+            taskListByHorizon
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -241,24 +246,33 @@ struct TasksSectionView: View {
         return .anticipation
     }
 
-    private var taskListByType: some View {
+    /// Open tasks bucketed by when they are due, sorted soonest first inside each bucket.
+    ///
+    /// The list used to be cut up by `TaskType` and ordered by creation date, which meant a
+    /// rendu due tomorrow sat below one due in March purely because it was typed in later.
+    /// Nothing on screen said what pressed. Type is still on every row, it just no longer
+    /// decides the shape of the list.
+    private var tasksByHorizon: [TaskHorizon: [PraxisTask]] {
+        let open = visibleTasks.filter { !$0.isDone }
+        return Dictionary(grouping: open, by: \.horizon).mapValues { tasks in
+            tasks.sorted { left, right in
+                switch (left.effectiveDueDate, right.effectiveDueDate) {
+                case let (l?, r?) where l != r: return l < r
+                // Undated tasks have nothing to rank them by, so the most recently written
+                // down comes first — it is the one still fresh in mind.
+                default: return left.createdAt > right.createdAt
+                }
+            }
+        }
+    }
+
+    private var taskListByHorizon: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                ForEach(TaskType.allCases, id: \.self) { type in
-                    let tasksForType = visibleTasks.filter { $0.type == type && !$0.isDone }
-                    if !tasksForType.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(type.displayName)
-                                .font(.headline)
-                            ForEach(tasksForType) { task in
-                                TaskRowView(
-                                    task: task,
-                                    onToggleDone: { toggleDone(task) },
-                                    onTap: { editingTask = task }
-                                )
-                                Divider()
-                            }
-                        }
+            VStack(alignment: .leading, spacing: 18) {
+                let grouped = tasksByHorizon
+                ForEach(TaskHorizon.allCases) { horizon in
+                    if let tasks = grouped[horizon], !tasks.isEmpty {
+                        horizonSection(horizon, tasks: tasks)
                     }
                 }
 
@@ -284,6 +298,45 @@ struct TasksSectionView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func horizonSection(_ horizon: TaskHorizon, tasks: [PraxisTask]) -> some View {
+        let isCollapsed = collapsedHorizons.contains(horizon.rawValue)
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                if isCollapsed {
+                    collapsedHorizons.remove(horizon.rawValue)
+                } else {
+                    collapsedHorizons.insert(horizon.rawValue)
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Text(horizon.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(horizon == .overdue ? Color.red : .primary)
+                    Text("\(tasks.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !isCollapsed {
+                ForEach(tasks) { task in
+                    TaskRowView(
+                        task: task,
+                        onToggleDone: { toggleDone(task) },
+                        onTap: { editingTask = task }
+                    )
+                }
+            }
         }
     }
 
