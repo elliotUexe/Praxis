@@ -79,8 +79,8 @@ struct AccueilSectionView: View {
                     HStack {
                         Text(task.title).font(.callout)
                         Spacer()
-                        if let due = task.dueDate {
-                            Text(dueLabel(due))
+                        if let due = task.effectiveDueDate {
+                            Text(TaskScheduling.countdownLabel(for: due))
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundStyle(.red)
@@ -160,9 +160,20 @@ struct AccueilSectionView: View {
         }
     }
 
+    /// What actually presses, regardless of what kind of work it is.
+    ///
+    /// This used to filter on `$0.type == .rendu`, which was not a product decision but a
+    /// consequence of the old model: a rendu was the only type that could carry a date, so
+    /// it was the only one that could be ranked. A DS next week never reached this panel.
+    /// Now it reads the effective date, so a milestone inside a dossier surfaces here too.
     private var pressingTasks: [PraxisTask] {
         let cutoff = Calendar.current.date(byAdding: .day, value: 5, to: Date()) ?? Date()
-        return Array(openTasks.filter { $0.type == .rendu && ($0.dueDate ?? .distantFuture) <= cutoff }.prefix(3))
+        return Array(
+            openTasks
+                .filter { ($0.effectiveDueDate ?? .distantFuture) <= cutoff }
+                .sorted { ($0.effectiveDueDate ?? .distantFuture) < ($1.effectiveDueDate ?? .distantFuture) }
+                .prefix(3)
+        )
     }
 
     private var needsReviewCount: Int {
@@ -184,17 +195,6 @@ struct AccueilSectionView: View {
             .sorted { $0.displayName < $1.displayName }
     }
 
-    private func dueLabel(_ date: Date) -> String {
-        let calendar = Calendar.current
-        let days = calendar.dateComponents(
-            [.day],
-            from: calendar.startOfDay(for: Date()),
-            to: calendar.startOfDay(for: date)
-        ).day ?? 0
-        if days < 0 { return "En retard" }
-        if days == 0 { return "Aujourd'hui" }
-        return "J-\(days)"
-    }
 }
 
 private struct CourseSummary: Identifiable {
