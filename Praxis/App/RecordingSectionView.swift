@@ -183,28 +183,10 @@ struct RecordingSectionView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Menu("Changer") {
-                ForEach(CourseDirectoryScanner.years, id: \.self) { year in
-                    let coursesForYear = session.availableCourses.filter { $0.year == year }
-                    if !coursesForYear.isEmpty {
-                        Menu(year) {
-                            ForEach(CourseDirectoryScanner.poles, id: \.self) { pole in
-                                let coursesForPole = coursesForYear.filter { $0.pole == pole }
-                                if !coursesForPole.isEmpty {
-                                    Menu(pole) {
-                                        ForEach(coursesForPole) { course in
-                                            Button(course.displayName) {
-                                                session.overrideDestination(toCourseVaultPath: course.vaultPath)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Divider()
-                Button("Autre dossier…") {
-                    session.pickCustomDestination()
+                CoursePickerMenu(courses: session.availableCourses) { course in
+                    session.overrideDestination(toCourseVaultPath: course.vaultPath)
+                } trailing: {
+                    Button("Autre dossier…") { session.pickCustomDestination() }
                 }
             }
             .font(.caption)

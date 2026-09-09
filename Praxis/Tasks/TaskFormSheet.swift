@@ -61,21 +61,33 @@ struct TaskFormSheet: View {
                 .lineLimit(2...4)
                 .onChange(of: detail) { isDeleteConfirming = false }
 
-            Picker("Cours", selection: $selectedCourseVaultPath) {
-                Text("Aucun").tag(String?.none)
-                ForEach(availableCourses) { course in
-                    Text("\(course.year) · \(course.pole) · \(course.displayName)")
-                        .tag(String?.some(course.vaultPath))
-                }
-            }
-
-            if let selectedCourseVaultPath {
-                Button {
-                    openCourseFolder(vaultPath: selectedCourseVaultPath)
-                } label: {
-                    Label("Ouvrir le dossier du cours", systemImage: "folder")
+            HStack(spacing: 6) {
+                Image(systemName: "book.closed")
+                    .foregroundStyle(.secondary)
+                Text(selectedCourseLabel)
+                    .font(.caption)
+                    .foregroundStyle(selectedCourseVaultPath == nil ? .tertiary : .secondary)
+                Menu("Changer") {
+                    CoursePickerMenu(courses: availableCourses) { course in
+                        selectedCourseVaultPath = course.vaultPath
+                    } trailing: {
+                        Button("Aucun") { selectedCourseVaultPath = nil }
+                    }
                 }
                 .font(.caption)
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                Spacer()
+                if let selectedCourseVaultPath {
+                    Button {
+                        openCourseFolder(vaultPath: selectedCourseVaultPath)
+                    } label: {
+                        Image(systemName: "folder")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Ouvrir le dossier du cours")
+                }
             }
 
             dateSection
@@ -312,6 +324,14 @@ struct TaskFormSheet: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var selectedCourseLabel: String {
+        guard let selectedCourseVaultPath else { return "Aucune matière" }
+        return availableCourses
+            .first { $0.vaultPath == selectedCourseVaultPath }
+            .map { "\($0.year) · \($0.pole) · \($0.displayName)" }
+            ?? VaultPaths.courseDisplayName(fromVaultPath: selectedCourseVaultPath)
     }
 
     private var dateToggleLabel: String {
