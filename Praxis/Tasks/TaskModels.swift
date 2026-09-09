@@ -7,6 +7,21 @@ import SwiftData
 enum TaskType: String, Codable, CaseIterable {
     case rendu, revisionFond, revisionDS, blocage, anticipation
 
+    /// Guesses a type from free text. A keyword heuristic, not a model call: quick capture
+    /// has to be instant, and it only has to beat "everything defaults to Anticipation".
+    /// Shared by the clipboard action in the task list and by the capture field in the
+    /// recording view, which used to be one private copy each away from drifting apart.
+    init(detectedFrom text: String) {
+        let normalized = text.lowercased().folding(options: .diacriticInsensitive, locale: .current)
+        if ["ds ", " ds", "examen", "controle", "partiel"].contains(where: normalized.contains) {
+            self = .revisionDS
+        } else if ["rendre", "rendu", "deadline", "a rendre", "date limite", "avant le"].contains(where: normalized.contains) {
+            self = .rendu
+        } else {
+            self = .anticipation
+        }
+    }
+
     var displayName: String {
         switch self {
         case .rendu: return "Rendu"

@@ -231,25 +231,9 @@ struct TasksSectionView: View {
 
     private func createFromClipboard() {
         guard let text = clipboardText else { return }
-        let task = PraxisTask(title: text, type: Self.detectType(from: text), origin: "manuel")
+        let task = PraxisTask(title: text, type: TaskType(detectedFrom: text), origin: "manuel")
         taskStore.modelContext.insert(task)
         taskStore.save()
-    }
-
-    /// Simple keyword heuristic, not an LLM call (pasted text creates a task instantly,
-    /// no local-model round-trip) — good enough to avoid every quick paste defaulting to
-    /// "Anticipation" when it's obviously a deadline or an exam to revise for.
-    private static func detectType(from text: String) -> TaskType {
-        let normalized = text.lowercased().folding(options: .diacriticInsensitive, locale: .current)
-        let dsKeywords = ["ds ", " ds", "examen", "controle", "partiel"]
-        if dsKeywords.contains(where: normalized.contains) {
-            return .revisionDS
-        }
-        let renduKeywords = ["rendre", "rendu", "deadline", "a rendre", "date limite", "avant le"]
-        if renduKeywords.contains(where: normalized.contains) {
-            return .rendu
-        }
-        return .anticipation
     }
 
     /// Open tasks bucketed by when they are due, sorted soonest first inside each bucket.

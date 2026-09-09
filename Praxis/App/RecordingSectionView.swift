@@ -15,6 +15,8 @@ struct RecordingSectionView: View {
     @State private var isDropTargeted = false
     @State private var selectedTab: RecordingTab = .transcription
     @StateObject private var transcriptSelection = TranscriptSelectionModel()
+    @State private var captureText: String = ""
+    @State private var captureConfirmation: String?
 
     private enum RecordingTab: String, CaseIterable {
         case transcription = "Transcription"
@@ -112,6 +114,7 @@ struct RecordingSectionView: View {
             switch selectedTab {
             case .transcription:
                 transcriptionScrollView
+                quickCaptureRow
             case .resume:
                 SummariesSectionView()
             }
@@ -326,6 +329,75 @@ struct RecordingSectionView: View {
             break
         }
         transcriptSelection.dismissAndDeselect()
+    }
+
+    /// Jot a task down without leaving the lecture.
+    ///
+    /// The course is not asked for: `AppSessionStore` already resolved it from the schedule
+    /// to know where to write the recording, so the task inherits it. The type is guessed
+    /// from the words. And when a recording is running the task keeps the transcript path
+    /// and the moment it was written, so "refaire l'exercice 4" can be traced back to what
+    /// was being said at 42 minutes.
+    ///
+    /// Deliberately a plain field with no keyboard shortcut and no sheet: anything that
+    /// grabs focus or opens a window costs more attention than the note is worth mid-course.
+    private var quickCaptureRow: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus.circle")
+                    .foregroundStyle(.secondary)
+                TextField("Noter une tâche pour ce cours…", text: $captureText)
+                    .textFieldStyle(.plain)
+                    .onSubmit(captureTask)
+                    // Clears on the next keystroke rather than on a timer: the confirmation
+                    // has served its purpose the moment you start writing the next one.
+                    .onChange(of: captureText) { captureConfirmation = nil }
+                if !captureText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Button("Ajouter", action: captureTask)
+                        .controlSize(.small)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(Color.gray.opacity(0.08))
+            .cornerRadius(8)
+
+            if let captureConfirmation {
+                Text(captureConfirmation)
+                    .font(.caption2)
+                    .foregroundStyle(Color.praxisAccent)
+                    .padding(.leading, 8)
+            }
+        }
+    }
+
+    private func captureTask() {
+        let trimmed = captureText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let task = PraxisTask(title: trimmed, type: TaskType(detectedFrom: trimmed), origin: "manuel")
+        if let coursePath = session.destinationCourseVaultPath {
+            task.course = taskStore.findOrCreateCourse(vaultPath: coursePath)
+        }
+        // Only while something is actually being recorded: outside a session there is no
+        // moment to point at, and a transcript path with no timestamp helps nobody.
+        if session.recordingState == .recording || session.recordingState == .paused,
+           let recordingURL = session.currentRecordingURL {
+            let transcriptURL = OutputFileManager.txtURL(
+                in: recordingURL.deletingLastPathComponent(),
+                baseName: recordingURL.deletingPathExtension().lastPathComponent
+            )
+            task.sourceTranscriptPath = transcriptURL.path
+            let stamp = OutputFileManager.transcriptTimestamp(Float(session.elapsedSeconds))
+            task.detail = "Noté à \(stamp) de l'enregistrement."
+        }
+        taskStore.modelContext.insert(task)
+        taskStore.save()
+
+        captureText = ""
+        captureConfirmation = session.destinationCourseVaultPath
+            .map { "Ajoutée à \(VaultPaths.courseDisplayName(fromVaultPath: $0))." }
+            ?? "Ajoutée sans matière."
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
