@@ -22,7 +22,6 @@ struct TasksSectionView: View {
     @State private var editingTask: PraxisTask?
     @State private var isCreatingTask = false
     @State private var isTriagePresented = false
-    @State private var pasteText: String = ""
     /// Folded sections, seeded from `TaskHorizon.startsCollapsed`. Held as raw values so the
     /// set survives without `TaskHorizon` needing to be `Hashable` for anything else.
     @State private var collapsedHorizons: Set<Int> = Set(
@@ -42,7 +41,6 @@ struct TasksSectionView: View {
         VStack(alignment: .leading, spacing: 12) {
             header
             courseFilterBar
-            pasteImportRow
             Divider()
             taskListByHorizon
         }
@@ -75,10 +73,15 @@ struct TasksSectionView: View {
         }
     }
 
+    /// Two things stay visible: triage, because it is work waiting on you, and the primary
+    /// action. Export, import checks and the rejected archive are maintenance — they used to
+    /// sit in the same row as "Nouvelle tâche", five controls wide, drowning the one button
+    /// that matters.
     private var header: some View {
-        HStack {
+        HStack(spacing: 8) {
             Text("Tâches").font(.title3)
             Spacer()
+
             if needsReviewCount > 0 {
                 Button {
                     isTriagePresented = true
@@ -86,33 +89,40 @@ struct TasksSectionView: View {
                     Label("Trier (\(needsReviewCount))", systemImage: "checklist")
                 }
             }
-            if !rejectedTasks.isEmpty {
-                Button {
-                    isRejectedTasksPresented = true
-                } label: {
-                    Label("Rejetées (\(rejectedTasks.count))", systemImage: "archivebox")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Button {
-                taskStore.scanPendingImports()
-            } label: {
-                Label("Vérifier les imports", systemImage: "arrow.triangle.2.circlepath")
-            }
+
             Menu {
-                Button("Toutes les tâches") { exportTasks(course: nil) }
-                    .disabled(allTasks.isEmpty)
-                if !coursesWithTasks.isEmpty {
+                Button("Créer depuis le presse-papiers", systemImage: "doc.on.clipboard") {
+                    createFromClipboard()
+                }
+                .disabled(clipboardText == nil)
+
+                Divider()
+
+                Menu("Exporter") {
+                    Button("Toutes les tâches") { exportTasks(course: nil) }
+                    if !coursesWithTasks.isEmpty {
+                        Divider()
+                        ForEach(coursesWithTasks, id: \.id) { course in
+                            Button(course.displayName) { exportTasks(course: course) }
+                        }
+                    }
+                }
+                .disabled(allTasks.isEmpty)
+
+                Button("Vérifier les imports", systemImage: "arrow.triangle.2.circlepath") {
+                    taskStore.scanPendingImports()
+                }
+
+                if !rejectedTasks.isEmpty {
                     Divider()
-                    ForEach(coursesWithTasks, id: \.id) { course in
-                        Button(course.displayName) { exportTasks(course: course) }
+                    Button("Tâches rejetées (\(rejectedTasks.count))", systemImage: "archivebox") {
+                        isRejectedTasksPresented = true
                     }
                 }
             } label: {
-                Label("Exporter", systemImage: "square.and.arrow.up")
+                Image(systemName: "ellipsis.circle")
             }
-            .disabled(allTasks.isEmpty)
+            .menuStyle(.borderlessButton)
             .fixedSize()
 
             Button {
@@ -120,6 +130,7 @@ struct TasksSectionView: View {
             } label: {
                 Label("Nouvelle tâche", systemImage: "plus")
             }
+            .buttonStyle(.borderedProminent)
         }
     }
 
@@ -209,25 +220,20 @@ struct TasksSectionView: View {
             .replacingOccurrences(of: " ", with: "-")
     }
 
-    /// Direct-creation path for pasted free text (no LLM extraction yet — that's Phase 5).
-    /// Useful today for retroactively turning a note, a pasted email, etc. into a task.
-    private var pasteImportRow: some View {
-        HStack {
-            TextField("Coller du texte pour créer une tâche…", text: $pasteText)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(createFromPastedText)
-            Button("Créer") { createFromPastedText() }
-                .disabled(pasteText.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
+    /// Turns whatever is on the clipboard into a task. Replaces a text field that occupied a
+    /// full row permanently for an occasional use: the text is already in the clipboard when
+    /// you reach for this, so asking you to paste it into a box first was a step for nothing.
+    private var clipboardText: String? {
+        let text = NSPasteboard.general.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text?.isEmpty == false) ? text : nil
     }
 
-    private func createFromPastedText() {
-        let trimmed = pasteText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let task = PraxisTask(title: trimmed, type: Self.detectType(from: trimmed), origin: "manuel")
+    private func createFromClipboard() {
+        guard let text = clipboardText else { return }
+        let task = PraxisTask(title: text, type: Self.detectType(from: text), origin: "manuel")
         taskStore.modelContext.insert(task)
         taskStore.save()
-        pasteText = ""
     }
 
     /// Simple keyword heuristic, not an LLM call (pasted text creates a task instantly,
