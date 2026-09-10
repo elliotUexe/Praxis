@@ -13,10 +13,16 @@ struct SettingsView: View {
     @State private var isTesting = false
 
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
+    @AppStorage(TranscriptionLanguage.storageKey) private var languageRaw = TranscriptionLanguage.auto.rawValue
+
+    @State private var inputDevice: AudioInputGain.Device?
+    @State private var inputGain: Double = 0
 
     var body: some View {
         VStack(spacing: 0) {
             TabView {
+                audioTab
+                    .tabItem { Label("Audio", systemImage: "waveform") }
                 iaTab
                     .tabItem { Label("IA", systemImage: "sparkles") }
                 vaultTab
@@ -89,6 +95,86 @@ struct SettingsView: View {
             .labelsHidden()
             .pickerStyle(.segmented)
         }
+    }
+
+    private var audioTab: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Langue des cours").font(.caption).foregroundStyle(.secondary)
+                Picker("Langue", selection: $languageRaw) {
+                    ForEach(TranscriptionLanguage.allCases) { language in
+                        Text(language.displayName).tag(language.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Text("Automatique détecte la langue à chaque fenêtre de 30 secondes. Forcer une langue est plus prévisible sur un cours mêlant les deux.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+
+            inputGainSection
+
+            Spacer(minLength: 0)
+        }
+        .onAppear(perform: loadInputDevice)
+    }
+
+    /// The device's own capture level, not a multiplier applied afterwards. Amplifying
+    /// samples that are already recorded raises the lecturer and the room by the same
+    /// amount and changes nothing for Whisper; turning the microphone up captures more of a
+    /// quiet voice in the first place.
+    @ViewBuilder
+    private var inputGainSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Niveau d'entrée").font(.caption).foregroundStyle(.secondary)
+
+            if let inputDevice {
+                Text(inputDevice.name)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+
+                if inputDevice.volume != nil, inputDevice.isSettable {
+                    HStack(spacing: 8) {
+                        Image(systemName: "mic")
+                            .foregroundStyle(.secondary)
+                        Slider(value: $inputGain, in: 0...1)
+                            .onChange(of: inputGain) {
+                                AudioInputGain.setVolume(Float(inputGain), on: inputDevice.id)
+                            }
+                        Text("\(Int(inputGain * 100)) %")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 44, alignment: .trailing)
+                    }
+                    Text("C'est le même réglage que Réglages Système > Son > Entrée : le modifier ici le modifie partout.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Ce micro n'expose pas de réglage de niveau. Un iPhone utilisé comme micro, par exemple, gère son gain lui-même.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("Aucune entrée audio détectée.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Button("Actualiser", systemImage: "arrow.clockwise", action: loadInputDevice)
+                .font(.caption)
+                .controlSize(.small)
+        }
+    }
+
+    private func loadInputDevice() {
+        inputDevice = AudioInputGain.defaultInputDevice()
+        inputGain = Double(inputDevice?.volume ?? 0)
     }
 
     private var vaultTab: some View {
