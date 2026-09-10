@@ -10,14 +10,47 @@ struct DisplaySegment: Identifiable, Equatable {
     var isRefined: Bool
 }
 
+/// The three pieces of transcription state that change several times a second.
+///
+/// Split out of `LiveTranscriptionCoordinator` because `ObservableObject` invalidates per
+/// *object*, not per property: while a lecture was being transcribed, every `unconfirmedText`
+/// update invalidated everything that held the coordinator — including `PraxisApp` itself,
+/// which owns it as a `@StateObject`. The whole view tree was being rebuilt several times a
+/// second, and an open `Menu` does not survive that: picking a course in the task form was
+/// impossible during a recording, because the cascade was torn down between clicks.
+///
+/// Held by the coordinator as a plain `let`, so mutating it does not touch the coordinator's
+/// own `objectWillChange`. Only the view that actually shows the transcript observes it.
+@MainActor
+final class LiveTranscriptDisplay: ObservableObject {
+    @Published fileprivate(set) var segments: [DisplaySegment] = []
+    @Published fileprivate(set) var unconfirmedText: String = ""
+    /// Passages marked as unreliable during the lecture. Owned here rather than by the view
+    /// because the view is thrown away and rebuilt constantly, and these have to reach
+    /// `writeTranscript()`.
+    @Published fileprivate(set) var flags: [TranscriptFlag] = []
+}
+
 @MainActor
 final class LiveTranscriptionCoordinator: ObservableObject {
-    @Published private(set) var displaySegments: [DisplaySegment] = []
-    @Published private(set) var unconfirmedText: String = ""
-    /// Passages marked as unreliable during the lecture. Owned here rather than by the view
-    /// for the same reason `displaySegments` is: the view is thrown away and rebuilt
-    /// constantly, and these have to reach `writeTranscript()`.
-    @Published private(set) var flags: [TranscriptFlag] = []
+    /// Everything that ticks. See `LiveTranscriptDisplay` for why it is not published here.
+    let display = LiveTranscriptDisplay()
+
+    /// Internal accessors so the transcription logic below reads the same as it did when
+    /// these were stored properties.
+    private var displaySegments: [DisplaySegment] {
+        get { display.segments }
+        set { display.segments = newValue }
+    }
+    private var unconfirmedText: String {
+        get { display.unconfirmedText }
+        set { display.unconfirmedText = newValue }
+    }
+    private var flags: [TranscriptFlag] {
+        get { display.flags }
+        set { display.flags = newValue }
+    }
+
     @Published private(set) var isReady = false
     @Published private(set) var isRefiningReady = false
     @Published private(set) var isLoadingModel = false

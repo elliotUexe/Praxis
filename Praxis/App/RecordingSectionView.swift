@@ -14,7 +14,6 @@ struct RecordingSectionView: View {
     @State private var isFileImporterPresented = false
     @State private var isDropTargeted = false
     @State private var selectedTab: RecordingTab = .transcription
-    @StateObject private var transcriptSelection = TranscriptSelectionModel()
     @State private var captureText: String = ""
     @State private var captureConfirmation: String?
 
@@ -59,7 +58,7 @@ struct RecordingSectionView: View {
                             guard let outputURL = await session.beginRecordingSession() else { return }
                             await transcription.start(outputURL: outputURL)
                             let transcriptProvider: () -> String = { [weak transcription] in
-                                transcription?.displaySegments.map(\.text).joined(separator: " ") ?? ""
+                                transcription?.display.segments.map(\.text).joined(separator: " ") ?? ""
                             }
                             // The local-LLM live cycle used to run here alongside the paid
                             // summary; it's disconnected (see LocalLLMCoordinator
@@ -113,7 +112,11 @@ struct RecordingSectionView: View {
 
             switch selectedTab {
             case .transcription:
-                transcriptionScrollView
+                LiveTranscriptPane(
+                    display: transcription.display,
+                    onFlag: transcription.flag,
+                    onUnflag: transcription.unflag
+                )
                 quickCaptureRow
             case .resume:
                 SummariesSectionView()
@@ -249,87 +252,6 @@ struct RecordingSectionView: View {
     }
 
 
-
-    /// Only the tail of the transcript is handed to SwiftUI. This `VStack` lays out every
-    /// child on every update, and updates fire several times per second while someone is
-    /// speaking, so the layout cost grew linearly with session length: sampling a real
-    /// 1h24 course showed the app pegged at 119% CPU with the main thread almost entirely
-    /// inside `sizeThatFits`. Capping the rendered window makes that cost constant.
-    ///
-    /// `transcription.displaySegments` itself stays complete on purpose — it is the source
-    /// of truth for the `.txt` written next to the WAV, so trimming it would silently
-    /// truncate every saved transcript.
-    private static let visibleSegmentLimit = 100
-
-    private var visibleSegments: ArraySlice<DisplaySegment> {
-        transcription.displaySegments.suffix(Self.visibleSegmentLimit)
-    }
-
-    private var hiddenSegmentCount: Int {
-        max(0, transcription.displaySegments.count - Self.visibleSegmentLimit)
-    }
-
-    private var transcriptionScrollView: some View {
-        TranscriptTextView(
-            segments: Array(visibleSegments),
-            flags: transcription.flags,
-            unconfirmedText: transcription.unconfirmedText,
-            hiddenSegmentCount: hiddenSegmentCount,
-            selection: transcriptSelection
-        )
-        .overlay(alignment: .topLeading) { flagPill }
-        .frame(minHeight: 150)
-        .frame(maxHeight: .infinity)
-        .background(Color.gray.opacity(0.08))
-        .cornerRadius(8)
-    }
-
-    /// Floats over the selection rather than living in the toolbar: the gesture is
-    /// "select the bad passage, confirm", and a button on the other side of the window
-    /// would break that into two unrelated movements.
-    @ViewBuilder
-    private var flagPill: some View {
-        if transcriptSelection.action != .none {
-            GeometryReader { geometry in
-                let size = CGSize(width: 108, height: 22)
-                let anchor = transcriptSelection.anchor
-                let above = anchor.minY - size.height / 2 - 6
-                Button(action: applyFlagAction) {
-                    Label(
-                        transcriptSelection.action == .add ? "Signaler" : "Retirer",
-                        systemImage: transcriptSelection.action == .add ? "exclamationmark.triangle" : "xmark.circle"
-                    )
-                    .font(.caption)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .frame(width: size.width, height: size.height)
-                .position(
-                    // Kept inside the transcript on both axes: a selection on the first
-                    // line puts the pill below instead of off the top edge, and one at the
-                    // right margin slides back in rather than being clipped.
-                    x: min(max(anchor.midX, size.width / 2), max(size.width / 2, geometry.size.width - size.width / 2)),
-                    y: above > size.height / 2 ? above : anchor.maxY + size.height / 2 + 6
-                )
-            }
-        }
-    }
-
-    private func applyFlagAction() {
-        switch transcriptSelection.action {
-        case .add:
-            for target in transcriptSelection.targets {
-                transcription.flag(segmentStart: target.segmentStart, substring: target.substring)
-            }
-        case .remove:
-            for target in transcriptSelection.targets {
-                transcription.unflag(segmentStart: target.segmentStart, substring: target.substring)
-            }
-        case .none:
-            break
-        }
-        transcriptSelection.dismissAndDeselect()
-    }
 
     /// Jot a task down without leaving the lecture.
     ///
