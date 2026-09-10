@@ -12,7 +12,6 @@ struct TaskFormSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     let existingTask: PraxisTask?
-    let availableCourses: [CourseOption]
 
     @State private var title: String
     @State private var detail: String
@@ -30,10 +29,12 @@ struct TaskFormSheet: View {
     @State private var newSubtaskMinutes: Int = 30
     @State private var focusTarget: FocusTarget?
     @State private var isDeleteConfirming = false
+    /// Walked once when the sheet appears. Building it inside `body` meant re-reading the
+    /// whole folder tree on every keystroke in the title field.
+    @State private var courseTree: [CourseFolderNode] = []
 
-    init(existingTask: PraxisTask?, availableCourses: [CourseOption]) {
+    init(existingTask: PraxisTask?) {
         self.existingTask = existingTask
-        self.availableCourses = availableCourses
         _title = State(initialValue: existingTask?.title ?? "")
         _detail = State(initialValue: existingTask?.detail ?? "")
         _type = State(initialValue: existingTask?.type ?? .rendu)
@@ -68,8 +69,8 @@ struct TaskFormSheet: View {
                     .font(.caption)
                     .foregroundStyle(selectedCourseVaultPath == nil ? .tertiary : .secondary)
                 Menu("Changer") {
-                    CoursePickerMenu(courses: availableCourses) { course in
-                        selectedCourseVaultPath = course.vaultPath
+                    CoursePickerMenu(tree: courseTree) { relativePath in
+                        selectedCourseVaultPath = relativePath
                     } trailing: {
                         Button("Aucun") { selectedCourseVaultPath = nil }
                     }
@@ -135,6 +136,7 @@ struct TaskFormSheet: View {
         }
         .padding()
         .frame(width: 420)
+        .onAppear { courseTree = CourseFolderTree.build() }
         .sheet(item: $focusTarget) { target in
             FocusTimerView(task: target.task, subtask: target.subtask)
                 .environmentObject(focusTimer)
@@ -288,7 +290,7 @@ struct TaskFormSheet: View {
     }
 
     private func openCourseFolder(vaultPath: String) {
-        NSWorkspace.shared.open(VaultPaths.root.appendingPathComponent(vaultPath))
+        NSWorkspace.shared.open(VaultSettings.root.appendingPathComponent(vaultPath))
     }
 
     private func toggleSubtask(_ subtask: Subtask) {
@@ -328,10 +330,9 @@ struct TaskFormSheet: View {
 
     private var selectedCourseLabel: String {
         guard let selectedCourseVaultPath else { return "Aucune matière" }
-        return availableCourses
-            .first { $0.vaultPath == selectedCourseVaultPath }
-            .map { "\($0.year) · \($0.pole) · \($0.displayName)" }
-            ?? VaultPaths.courseDisplayName(fromVaultPath: selectedCourseVaultPath)
+        // Shown as the path reads on disk — the levels above a course are whatever the
+        // folders are called, not a fixed Année · Pôle pair.
+        return selectedCourseVaultPath.split(separator: "/").joined(separator: " · ")
     }
 
     private var dateToggleLabel: String {

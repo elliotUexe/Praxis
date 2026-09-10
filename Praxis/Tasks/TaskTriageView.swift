@@ -62,7 +62,7 @@ struct TaskTriageView: View {
         }
         .onKeyPress(action: handleKeyPress)
         .sheet(item: $editingTask) { task in
-            TaskFormSheet(existingTask: task, availableCourses: CourseDirectoryScanner.scan())
+            TaskFormSheet(existingTask: task)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)

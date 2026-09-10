@@ -238,7 +238,7 @@ final class LocalLLMCoordinator: ObservableObject {
             await prepareIfNeeded()
             guard let chatSession else { return }
             let prompt = """
-            Tu es un assistant de cours\(currentCourseVaultPath.map { " (\(VaultPaths.courseDisplayName(fromVaultPath: $0)))" } ?? ""). Voici la transcription en cours :
+            Tu es un assistant de cours\(currentCourseVaultPath.map { " (\(VaultSettings.displayName(forRelativePath: $0)))" } ?? ""). Voici la transcription en cours :
             ---
             \(String(transcript.suffix(8000)))
             ---
@@ -321,7 +321,7 @@ final class LocalLLMCoordinator: ObservableObject {
 
     private func updateSummary(delta: String) async {
         guard let chatSession else { return }
-        let courseContext = currentCourseVaultPath.map { " de \(VaultPaths.courseDisplayName(fromVaultPath: $0))" } ?? ""
+        let courseContext = currentCourseVaultPath.map { " de \(VaultSettings.displayName(forRelativePath: $0))" } ?? ""
         // Capped to the last ~4000 chars: the full summary re-embedded every call was
         // both slow (bigger prompt to prefill every pass) and unbounded as a session goes
         // on. A long session's early content still lives in the exported Markdown, just
@@ -349,7 +349,7 @@ final class LocalLLMCoordinator: ObservableObject {
 
     private func extractAndInsertTasks(delta: String) async {
         guard let chatSession, let taskStore else { return }
-        let courseName = currentCourseVaultPath.map(VaultPaths.courseDisplayName)
+        let courseName = currentCourseVaultPath.map(VaultSettings.displayName)
         let prompt = Self.extractionPrompt(for: delta, courseName: courseName)
         await chatSession.clear()
         chatSession.generateParameters = Self.generateParameters(maxTokens: 500)
@@ -595,7 +595,7 @@ final class LocalLLMCoordinator: ObservableObject {
     /// the course root if both are absent/empty — an unreadable file is skipped, not fatal
     /// to the rest of the question.
     private static func collectCourseDocuments(courseVaultPath: String) -> [CourseDocument] {
-        let courseRoot = VaultPaths.root.appendingPathComponent(courseVaultPath)
+        let courseRoot = VaultSettings.root.appendingPathComponent(courseVaultPath)
         let subfolders = ["Transcriptions", "Resumes"].map { courseRoot.appendingPathComponent($0) }
         var searchRoots = subfolders.filter { FileManager.default.fileExists(atPath: $0.path) }
         if searchRoots.isEmpty { searchRoots = [courseRoot] }

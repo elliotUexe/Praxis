@@ -172,7 +172,7 @@ struct RecordingSectionView: View {
 
     private var destinationLabel: String {
         if let coursePath = session.destinationCourseVaultPath {
-            return VaultPaths.courseDisplayName(fromVaultPath: coursePath)
+            return VaultSettings.displayName(forRelativePath: coursePath)
         }
         if let customFolder = session.customDestinationFolder {
             return customFolder.lastPathComponent
@@ -191,8 +191,8 @@ struct RecordingSectionView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Menu("Changer") {
-                CoursePickerMenu(courses: session.availableCourses) { course in
-                    session.overrideDestination(toCourseVaultPath: course.vaultPath)
+                CoursePickerMenu(tree: session.courseTree) { relativePath in
+                    session.overrideDestination(toCourseVaultPath: relativePath)
                 } trailing: {
                     Button("Autre dossier…") { session.pickCustomDestination() }
                 }
@@ -320,7 +320,7 @@ struct RecordingSectionView: View {
 
         captureText = ""
         captureConfirmation = session.destinationCourseVaultPath
-            .map { "Ajoutée à \(VaultPaths.courseDisplayName(fromVaultPath: $0))." }
+            .map { "Ajoutée à \(VaultSettings.displayName(forRelativePath: $0))." }
             ?? "Ajoutée sans matière."
     }
 

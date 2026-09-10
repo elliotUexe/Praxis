@@ -6,6 +6,8 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
+    @EnvironmentObject private var session: AppSessionStore
+    @EnvironmentObject private var taskStore: TaskStoreCoordinator
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
     @State private var anthropicKey: String = KeychainStore.get("anthropic_api_key") ?? ""
@@ -15,6 +17,8 @@ struct SettingsView: View {
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
     @AppStorage(TranscriptionLanguage.storageKey) private var languageRaw = TranscriptionLanguage.auto.rawValue
 
+    @State private var isVaultSetupPresented = false
+    @State private var rollbackVersion = ""
     @State private var inputDevice: AudioInputGain.Device?
     @State private var inputGain: Double = 0
 
@@ -245,13 +249,33 @@ struct SettingsView: View {
     }
 
     private var vaultTab: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Vault Obsidian").font(.caption).foregroundStyle(.secondary)
-            Text(VaultPaths.root.path)
-                .font(.caption2)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Dossier de cours").font(.caption).foregroundStyle(.secondary)
+            Text(VaultSettings.root.path)
+                .font(.caption2.monospaced())
                 .foregroundStyle(.tertiary)
                 .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Profondeur des matières : \(VaultSettings.courseDepth)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+
+            Button("Changer le dossier…") { isVaultSetupPresented = true }
+                .controlSize(.small)
+
+            Text("Praxis lit vos matières dans l'arborescence de ce dossier. Changer de dossier ne déplace rien : les matières déjà connues sont retrouvées par leur marqueur.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
             Spacer(minLength: 0)
+        }
+        .sheet(isPresented: $isVaultSetupPresented) {
+            VaultSetupView(isInitialSetup: false) {
+                session.reloadCourses()
+                taskStore.migrateCourses()
+            }
         }
     }
 
@@ -263,6 +287,40 @@ struct SettingsView: View {
         }
     }
 
+
+    /// Installing any published version, not only the newest.
+    ///
+    /// The warning is not decoration. Going back replaces the application, not the
+    /// database: a build older than a schema change may refuse to open a store that has
+    /// already been migrated, and `TaskStoreCoordinator` treats that as fatal. Praxis's own
+    /// migrations only ever add fields, and copy the store aside first, precisely so this
+    /// stays a way out rather than a trap — but a version far enough back is still a risk.
+    @ViewBuilder
+    private var versionRollbackSection: some View {
+        if updateChecker.availableVersions.count > 1 {
+            Divider()
+            Text("Revenir à une version").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Picker("Version", selection: $rollbackVersion) {
+                    Text("Choisir…").tag("")
+                    ForEach(updateChecker.availableVersions, id: \.version) { entry in
+                        Text(entry.version + (entry.version == updateChecker.currentVersion ? " (installée)" : ""))
+                            .tag(entry.version)
+                    }
+                }
+                .labelsHidden()
+                Button("Installer") {
+                    Task { await updateChecker.install(version: rollbackVersion) }
+                }
+                .controlSize(.small)
+                .disabled(rollbackVersion.isEmpty || rollbackVersion == updateChecker.currentVersion || updateChecker.isUpdating)
+            }
+            Text("Une version antérieure peut ne pas savoir relire des données déjà migrées. Une copie de la base est faite avant chaque migration, dans Application Support/Praxis/Backups.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
 
     private var updateSection: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -307,6 +365,8 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+
+            versionRollbackSection
 
             Button(updateChecker.isChecking ? "Vérification…" : "Vérifier maintenant") {
                 Task { await updateChecker.checkForUpdates() }

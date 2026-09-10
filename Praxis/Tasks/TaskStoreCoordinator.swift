@@ -5,12 +5,14 @@ import AppKit
 @MainActor
 final class TaskStoreCoordinator: ObservableObject {
     let modelContainer: ModelContainer
+    let storeURL: URL
     var modelContext: ModelContext { modelContainer.mainContext }
 
     @Published var lastError: String?
     @Published private(set) var lastImportScanAt: Date?
-
-    private var foregroundObserver: NSObjectProtocol?
+    /// Courses whose folder could not be found. Surfaced as a banner rather than a blocking
+    /// dialog: a folder that moved is no reason to stop someone reading their task list.
+    @Published private(set) var unresolvedCourses: [Course] = []
 
     init() {
         let schema = Schema([Course.self, PraxisTask.self, RevisionBlock.self, TaskComment.self, Subtask.self, FocusSession.self])
@@ -23,10 +25,9 @@ final class TaskStoreCoordinator: ObservableObject {
             .appendingPathComponent("Praxis", isDirectory: true)
         try? FileManager.default.createDirectory(at: storeDirectory, withIntermediateDirectories: true)
 
-        let config = ModelConfiguration(
-            schema: schema,
-            url: storeDirectory.appendingPathComponent("PraxisTasks.store")
-        )
+        let storeURL = storeDirectory.appendingPathComponent("PraxisTasks.store")
+        let config = ModelConfiguration(schema: schema, url: storeURL)
+        self.storeURL = storeURL
 
         do {
             modelContainer = try ModelContainer(for: schema, configurations: [config])
@@ -35,20 +36,7 @@ final class TaskStoreCoordinator: ObservableObject {
         }
 
         migrateHorizonDates()
-        scanPendingImports()
-        foregroundObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.scanPendingImports() }
-        }
-    }
-
-    deinit {
-        if let foregroundObserver {
-            NotificationCenter.default.removeObserver(foregroundObserver)
-        }
+        migrateCourses()
     }
 
     /// Moves `horizonDate` into `dueDate`, once, at launch. Until 0.4 an "Anticipation"
@@ -70,29 +58,90 @@ final class TaskStoreCoordinator: ObservableObject {
         save()
     }
 
-    /// Phase 6: picks up JSON batches dropped by an external Claude Code skill into
-    /// `90_Meta/staging/pending-imports/`. Called at launch, on foreground, and available
-    /// for a manual "Vérifier les imports" button — never on a live-typing timer, this is
-    /// cheap but not free (a directory scan + JSON decode per file).
-    func scanPendingImports() {
-        PendingImportScanner.scan(taskStore: self)
+    /// Imports one JSON batch produced by an external skill.
+    ///
+    /// Replaces a folder watched at launch and on every foreground, which pointed at
+    /// `90_Meta/staging/pending-imports` inside one particular vault — a path that stops
+    /// existing the moment the root becomes a setting, and that never meant anything to
+    /// anyone else. Choosing the file is one gesture more and no guesswork.
+    func importTasks(from url: URL) {
+        PendingImportScanner.importFile(at: url, taskStore: self)
         lastImportScanAt = Date()
+    }
+
+    /// Re-anchors courses onto stable identities, and follows folders that moved. Runs at
+    /// every launch: it is idempotent, and it is also what recovers from a root change.
+    func migrateCourses() {
+        let hasUnmigrated = (try? modelContext.fetch(
+            FetchDescriptor<Course>(predicate: #Predicate { $0.stableID == nil })
+        ))?.isEmpty == false
+        if hasUnmigrated {
+            CourseMigration.backupStore(at: storeURL)
+        }
+
+        let outcome = CourseMigration.run(context: modelContext, root: VaultSettings.root)
+        unresolvedCourses = outcome.unresolved
+        save()
+    }
+
+    /// Drops a course's folder link, keeping its tasks. The only way out when a folder was
+    /// deleted rather than moved: without it the banner would never clear.
+    func detachCourse(_ course: Course) {
+        course.stableID = nil
+        course.relativePath = nil
+        unresolvedCourses.removeAll { $0.id == course.id }
+        save()
+    }
+
+    /// Points a course at a folder chosen by hand, and marks it.
+    func relocateCourse(_ course: Course, to folder: URL) {
+        guard let id = CourseMarker.ensure(in: folder) else {
+            lastError = "Impossible d'écrire dans ce dossier."
+            return
+        }
+        course.stableID = id
+        course.relativePath = VaultSettings.relativePath(for: folder)
+        course.displayName = folder.lastPathComponent
+        unresolvedCourses.removeAll { $0.id == course.id }
+        save()
     }
 
     /// Finds the `Course` row for a vault-relative path, creating it if absent. The single
     /// identity key shared by manual creation, calendar-resolved recording destinations, and
     /// future import mechanisms — never an invented slug — so they always converge on the
     /// same row for the same real folder.
+    /// Resolves the `Course` row for a folder, creating it if needed.
+    ///
+    /// Identity comes from the folder's marker, not from its path, so a course found again
+    /// after being moved or renamed is the same course. Choosing a folder is what marks it:
+    /// there is no separate "declare this a subject" step, and no fifty hidden files written
+    /// into a vault on first launch for folders that may never be used.
     func findOrCreateCourse(vaultPath: String) -> Course {
-        let descriptor = FetchDescriptor<Course>(predicate: #Predicate { $0.id == vaultPath })
-        if let existing = try? modelContext.fetch(descriptor).first {
+        let folder = VaultSettings.url(forRelativePath: vaultPath)
+        let markerID = CourseMarker.ensure(in: folder)
+
+        if let markerID,
+           let existing = try? modelContext.fetch(
+               FetchDescriptor<Course>(predicate: #Predicate { $0.stableID == markerID })
+           ).first {
+            existing.relativePath = vaultPath
+            existing.displayName = VaultSettings.displayName(forRelativePath: vaultPath)
             return existing
         }
-        let components = vaultPath.split(separator: "/")
-        let year = components.count > 1 ? String(components[1]) : ""
-        let pole = components.count > 2 ? String(components[2]) : ""
-        let displayName = VaultPaths.courseDisplayName(fromVaultPath: vaultPath)
-        let course = Course(id: vaultPath, displayName: displayName, pole: pole, year: year)
+        // A row from before markers existed, still keyed by its old path.
+        if let legacy = try? modelContext.fetch(
+            FetchDescriptor<Course>(predicate: #Predicate { $0.relativePath == vaultPath })
+        ).first {
+            legacy.stableID = markerID
+            return legacy
+        }
+
+        let course = Course(
+            id: vaultPath,
+            displayName: VaultSettings.displayName(forRelativePath: vaultPath),
+            stableID: markerID,
+            relativePath: vaultPath
+        )
         modelContext.insert(course)
         return course
     }

@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import UniformTypeIdentifiers
 
 /// "Tâches" section — the real Praxis MVP dashboard: CRUD on all 5 task types, grouped by
 /// type, with full edit access regardless of a task's origin (manual or auto-imported).
@@ -18,7 +19,6 @@ struct TasksSectionView: View {
     /// `ContentView` so Accueil can navigate here with a course already selected.
     @Binding var courseFilter: String?
 
-    @State private var availableCourses: [CourseOption] = []
     @State private var editingTask: PraxisTask?
     @State private var isCreatingTask = false
     @State private var isTriagePresented = false
@@ -46,17 +46,14 @@ struct TasksSectionView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onAppear {
-            availableCourses = CourseDirectoryScanner.scan()
-        }
         .sheet(item: $editingTask) { task in
-            TaskFormSheet(existingTask: task, availableCourses: availableCourses)
+            TaskFormSheet(existingTask: task)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)
         }
         .sheet(isPresented: $isCreatingTask) {
-            TaskFormSheet(existingTask: nil, availableCourses: availableCourses)
+            TaskFormSheet(existingTask: nil)
                 .environmentObject(taskStore)
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)
@@ -109,8 +106,8 @@ struct TasksSectionView: View {
                 }
                 .disabled(allTasks.isEmpty)
 
-                Button("Vérifier les imports", systemImage: "arrow.triangle.2.circlepath") {
-                    taskStore.scanPendingImports()
+                Button("Importer un fichier JSON…", systemImage: "square.and.arrow.down") {
+                    importTasksFromFile()
                 }
 
                 if !rejectedTasks.isEmpty {
@@ -178,10 +175,17 @@ struct TasksSectionView: View {
     private var coursesWithTasks: [Course] {
         var seen = Set<String>()
         var result: [Course] = []
-        for task in allTasks {
+        for task in allTasks where !task.isDone {
             guard let course = task.course, !seen.contains(course.id) else { continue }
             seen.insert(course.id)
             result.append(course)
+        }
+        // The course being filtered on always keeps its chip, even once its last open task
+        // is ticked off. Without this, finishing that task makes the chip vanish and leaves
+        // you looking at an empty list filtered on a subject with no button to leave it.
+        if let courseFilter, !seen.contains(courseFilter),
+           let active = allTasks.compactMap(\.course).first(where: { $0.id == courseFilter }) {
+            result.append(active)
         }
         return result.sorted { $0.displayName < $1.displayName }
     }
@@ -209,7 +213,7 @@ struct TasksSectionView: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = TaskMarkdownExporter.suggestedFilename(courseDisplayName: course?.displayName)
         panel.message = "Choisissez où enregistrer l'export des tâches"
-        panel.directoryURL = course.map { VaultPaths.root.appendingPathComponent($0.id) } ?? VaultPaths.root
+        panel.directoryURL = course.map { VaultSettings.root.appendingPathComponent($0.id) } ?? VaultSettings.root
         guard panel.runModal() == .OK, let url = panel.url else { return }
         try? markdown.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -227,6 +231,18 @@ struct TasksSectionView: View {
         let text = NSPasteboard.general.string(forType: .string)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return (text?.isEmpty == false) ? text : nil
+    }
+
+    /// Chosen rather than watched: the batch used to be picked up from a folder inside one
+    /// particular vault, which stops existing once the root is a setting.
+    private func importTasksFromFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Choisissez le fichier de tâches à importer"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        taskStore.importTasks(from: url)
     }
 
     private func createFromClipboard() {

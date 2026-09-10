@@ -1,28 +1,63 @@
 import Foundation
 
-/// Enumerates real UE folders on disk under `01_IMT/{1A,2A,3A}/{GEM,INP}/` — no hardcoded
-/// course list, always reflects the vault's actual current structure (including folders
-/// that exist but are still empty, like 2A while Pierre is starting that year). Shared by
-/// the recording destination override menu (`AppSessionStore`) and the Tâches CRUD course
-/// picker (`TaskFormSheet`) so there is exactly one place that knows how to find a course.
+/// Finds the course folders under the configured root.
+///
+/// Two sources, merged. Every folder sitting at the configured depth is *proposed* as a
+/// course, which covers a regularly shaped vault without asking anything. And every folder
+/// carrying a `CourseMarker` is a course wherever it sits, which covers the exceptions — a
+/// branch one level shallower than the rest, a folder picked by hand from the cascade.
+///
+/// Neither rule alone is enough. Measured on a real vault, depth alone finds 47 of 50 and
+/// invents one from a `.numbers` package; markers alone would find nothing until every
+/// folder had been visited once.
 enum CourseDirectoryScanner {
-    static let years = ["1A", "2A", "3A"]
-    static let poles = ["GEM", "INP"]
+    static func scan(
+        root: URL = VaultSettings.root,
+        depth: Int = VaultSettings.courseDepth
+    ) -> [CourseOption] {
+        var byPath: [String: CourseOption] = [:]
 
-    static func scan() -> [CourseOption] {
-        let fm = FileManager.default
-        var options: [CourseOption] = []
-        for year in years {
-            for pole in poles {
-                let poleURL = VaultPaths.coursesRoot.appendingPathComponent(year).appendingPathComponent(pole)
-                guard let entries = try? fm.contentsOfDirectory(at: poleURL, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
-                for entry in entries {
-                    guard (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
-                    let relativePath = "01_IMT/\(year)/\(pole)/\(entry.lastPathComponent)"
-                    options.append(CourseOption(vaultPath: relativePath, year: year, pole: pole))
-                }
+        for folder in foldersAtDepth(depth, under: root) {
+            if let option = option(for: folder, root: root) {
+                byPath[option.vaultPath] = option
             }
         }
-        return options.sorted { $0.displayName < $1.displayName }
+        for folder in CourseMarker.courseFolders(under: root) {
+            if let option = option(for: folder, root: root) {
+                byPath[option.vaultPath] = option
+            }
+        }
+
+        return byPath.values.sorted { $0.vaultPath.localizedStandardCompare($1.vaultPath) == .orderedAscending }
+    }
+
+    /// The folders exactly `depth` levels below `root`, skipping hidden folders and file
+    /// packages at every level so the walk never descends into a document bundle.
+    static func foldersAtDepth(_ depth: Int, under root: URL) -> [URL] {
+        var level = [root]
+        for _ in 0..<max(0, depth) {
+            level = level.flatMap { children(of: $0) }
+            if level.isEmpty { break }
+        }
+        return level
+    }
+
+    static func children(of folder: URL) -> [URL] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        return contents.filter(CourseMarker.isEligible)
+    }
+
+    private static func option(for folder: URL, root: URL) -> CourseOption? {
+        let rootPath = root.standardizedFileURL.path
+        let path = folder.standardizedFileURL.path
+        guard path.hasPrefix(rootPath) else { return nil }
+        let relative = String(path.dropFirst(rootPath.count))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !relative.isEmpty else { return nil }
+        return CourseOption(vaultPath: relative)
     }
 }

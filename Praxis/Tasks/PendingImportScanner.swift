@@ -11,32 +11,23 @@ import SwiftData
 /// same as SwiftData's `ModelContext` requires) — never called from a background context.
 @MainActor
 enum PendingImportScanner {
-    private static var pendingDir: URL {
-        VaultPaths.root.appendingPathComponent("90_Meta/staging/pending-imports")
-    }
-    private static var processedDir: URL { pendingDir.appendingPathComponent("processed") }
-    private static var failedDir: URL { pendingDir.appendingPathComponent("failed") }
-
-    static func scan(taskStore: TaskStoreCoordinator) {
-        let fm = FileManager.default
-        try? fm.createDirectory(at: pendingDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: processedDir, withIntermediateDirectories: true)
-        try? fm.createDirectory(at: failedDir, withIntermediateDirectories: true)
-
-        guard let files = try? fm.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil) else { return }
-        let jsonFiles = files
-            .filter { $0.pathExtension == "json" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-
-        for file in jsonFiles {
-            process(file: file, taskStore: taskStore, fm: fm)
+    /// Imports one batch, chosen by hand.
+    ///
+    /// This used to watch `90_Meta/staging/pending-imports` inside one specific vault,
+    /// scanned at launch and on every foreground. That path stopped existing the moment the
+    /// root became a setting — and it never existed at all for anyone but its author.
+    static func importFile(at file: URL, taskStore: TaskStoreCoordinator) {
+        pendingFailure = nil
+        process(file: file, taskStore: taskStore, fm: FileManager.default)
+        if let pendingFailure {
+            taskStore.lastError = "Import impossible : \(pendingFailure)"
         }
     }
 
     private static func process(file: URL, taskStore: TaskStoreCoordinator, fm: FileManager) {
         guard let data = try? Data(contentsOf: file) else { return }
         guard let batch = try? JSONDecoder().decode(PendingImportBatch.self, from: data), batch.schemaVersion == 1 else {
-            moveToFailed(file: file, fm: fm, reason: "JSON invalide, ou schemaVersion non supportée par cette version de Praxis.")
+            report(failure: "JSON invalide, ou schemaVersion non supportée par cette version de Praxis.")
             return
         }
 
@@ -51,7 +42,7 @@ enum PendingImportScanner {
         }
 
         taskStore.save()
-        moveToProcessed(file: file, fm: fm)
+        taskStore.lastError = nil
     }
 
     // MARK: - Creations (with dedup)
@@ -123,19 +114,14 @@ enum PendingImportScanner {
         return na == nb || na.hasPrefix(nb) || nb.hasPrefix(na)
     }
 
-    /// Never deleted — moved to `processed/` for an audit trail, matching the vault's own
-    /// "never delete without confirmation" spirit even though these aren't governed notes.
-    private static func moveToProcessed(file: URL, fm: FileManager) {
-        let dest = processedDir.appendingPathComponent(file.lastPathComponent)
-        try? fm.removeItem(at: dest)
-        try? fm.moveItem(at: file, to: dest)
+    /// The file is never moved or deleted now that it is chosen rather than watched: it
+    /// belongs to whoever picked it, and the failure is worth showing on screen instead of
+    /// being filed into a `failed/` folder nobody opens.
+    private static func report(failure reason: String) {
+        pendingFailure = reason
     }
 
-    private static func moveToFailed(file: URL, fm: FileManager, reason: String) {
-        let dest = failedDir.appendingPathComponent(file.lastPathComponent)
-        try? fm.removeItem(at: dest)
-        try? fm.moveItem(at: file, to: dest)
-        let sidecar = failedDir.appendingPathComponent(file.deletingPathExtension().lastPathComponent + ".error.txt")
-        try? reason.write(to: sidecar, atomically: true, encoding: .utf8)
-    }
+    /// Set by `report(failure:)` during a `process` call and read straight after by
+    /// `importFile(at:taskStore:)`, which is the only caller.
+    private static var pendingFailure: String?
 }

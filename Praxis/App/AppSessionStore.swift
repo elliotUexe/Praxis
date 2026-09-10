@@ -8,17 +8,6 @@ enum RecordingState: Equatable {
     case transcribing
 }
 
-/// A course folder offered in the destination override menu. `year`/`pole` are stored
-/// directly (not re-parsed from `vaultPath` at display time) so the override menu can
-/// group courses into a Année → Pôle → Cours cascade.
-struct CourseOption: Identifiable, Hashable {
-    let vaultPath: String
-    let year: String    // "1A" | "2A" | "3A"
-    let pole: String    // "GEM" | "INP"
-    var id: String { vaultPath }
-    var displayName: String { VaultPaths.courseDisplayName(fromVaultPath: vaultPath) }
-}
-
 @MainActor
 final class AppSessionStore: ObservableObject {
     @Published private(set) var recordingState: RecordingState = .idle
@@ -28,13 +17,14 @@ final class AppSessionStore: ObservableObject {
     @Published private(set) var currentRecordingURL: URL?
 
     /// Vault-relative course path the destination folder currently points at, resolved
-    /// from `ScheduleCache` at init and overridable at any time (before or during a
+    /// remembered from the previous session and overridable at any time (before or during a
     /// recording) via `overrideDestination(toCourseVaultPath:)`.
     @Published private(set) var destinationCourseVaultPath: String?
     /// Set when Pierre picks "Autre dossier…" instead of a resolved course — mutually
     /// exclusive with `destinationCourseVaultPath` (setting one clears the other).
     @Published private(set) var customDestinationFolder: URL?
-    @Published private(set) var availableCourses: [CourseOption] = []
+    /// Folder tree behind the destination cascade, rebuilt when the vault settings change.
+    @Published private(set) var courseTree: [CourseFolderNode] = []
 
     private var timer: Timer?
     /// Start of the *current* running stretch, nil while paused. The chrono is not plain
@@ -46,9 +36,19 @@ final class AppSessionStore: ObservableObject {
     private var accumulatedSeconds: TimeInterval = 0
     private var outputFolder: URL?
 
+    /// Remembered across launches so a lecture starts where the last one did.
+    ///
+    /// Replaces resolution from a pre-generated calendar cache, which only ever worked for
+    /// one person: it depended on a Claude Code skill writing a JSON file into one specific
+    /// vault. Anyone else got no destination at all, and had to pick a folder every time.
+    private static let lastCourseKey = "lastRecordingCourse"
+
     init() {
-        resolveDestinationFromSchedule()
-        availableCourses = CourseDirectoryScanner.scan()
+        reloadCourses()
+        if let remembered = UserDefaults.standard.string(forKey: Self.lastCourseKey),
+           FileManager.default.fileExists(atPath: VaultSettings.url(forRelativePath: remembered).path) {
+            overrideDestination(toCourseVaultPath: remembered)
+        }
     }
 
     /// Resolves mic permission and the output WAV path, and flips state to `.recording`.
@@ -85,6 +85,12 @@ final class AppSessionStore: ObservableObject {
         return wavURL
     }
 
+    /// Re-reads the vault. Called at launch and whenever the root or the course depth
+    /// changes in Réglages, so the cascade never shows a tree that no longer exists.
+    func reloadCourses() {
+        courseTree = CourseFolderTree.build()
+    }
+
     func pauseRecording() {
         guard recordingState == .recording else { return }
         recordingState = .paused
@@ -115,23 +121,15 @@ final class AppSessionStore: ObservableObject {
         currentRecordingURL = nil
     }
 
-    /// Resolves the current course from the pre-generated schedule cache (no network call)
-    /// and points the destination folder at that course's `Transcriptions/` folder, creating
-    /// it if needed. Called at init; produces no destination if the cache is empty or no
-    /// slot matches "now" — `beginRecordingSession` then falls back to the manual picker.
-    private func resolveDestinationFromSchedule() {
-        guard let coursePath = ScheduleCache.courseVaultPath(for: Date()) else { return }
-        overrideDestination(toCourseVaultPath: coursePath)
-    }
-
     /// Lets Pierre override the auto-detected course at any time — before or during a
     /// recording, per the Praxis MVP requirement that the destination is never locked in.
     func overrideDestination(toCourseVaultPath coursePath: String) {
-        let folder = VaultPaths.transcriptionsFolder(forCourseVaultPath: coursePath)
+        let folder = VaultSettings.transcriptionsFolder(forRelativePath: coursePath)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         outputFolder = folder
         destinationCourseVaultPath = coursePath
         customDestinationFolder = nil
+        UserDefaults.standard.set(coursePath, forKey: Self.lastCourseKey)
     }
 
     /// Lets Pierre point the destination at any folder on disk, entirely outside the

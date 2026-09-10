@@ -27,11 +27,14 @@ struct ContentView: View {
     @EnvironmentObject private var importCoordinator: ImportTranscriptionCoordinator
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
+    @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @Query(filter: #Predicate<PraxisTask> { $0.needsReview && !$0.isDone })
     private var needsReviewTasks: [PraxisTask]
 
     @State private var selectedSection: AppSection? = .accueil
     @State private var isSettingsPresented = false
+    @State private var isVaultSetupPresented = false
+    @State private var isUnresolvedPresented = false
     /// Vault path of the course the Tâches list is filtered on, or nil for "toutes les
     /// matières". Lives here rather than inside `TasksSectionView` so Accueil can set it
     /// while navigating (tap a course card → Tâches, already filtered on that course).
@@ -40,6 +43,56 @@ struct ContentView: View {
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
 
     var body: some View {
+        VStack(spacing: 0) {
+            vaultBanner
+            splitView
+        }
+        .sheet(isPresented: $isVaultSetupPresented) {
+            VaultSetupView(isInitialSetup: !VaultSettings.isRootReachable) {
+                session.reloadCourses()
+                taskStore.migrateCourses()
+            }
+        }
+        .sheet(isPresented: $isUnresolvedPresented) {
+            UnresolvedCoursesView().environmentObject(taskStore)
+        }
+    }
+
+    /// Shown rather than blocking. A folder that moved is no reason to stop someone reading
+    /// their task list, and a modal on launch would be the first thing they meet.
+    @ViewBuilder
+    private var vaultBanner: some View {
+        if !VaultSettings.isRootReachable {
+            banner(
+                text: "Dossier de cours introuvable.",
+                action: "Le choisir",
+                color: .orange
+            ) { isVaultSetupPresented = true }
+        } else if !taskStore.unresolvedCourses.isEmpty {
+            let count = taskStore.unresolvedCourses.count
+            banner(
+                text: "\(count) matière\(count > 1 ? "s" : "") introuvable\(count > 1 ? "s" : "") : dossier déplacé ou supprimé.",
+                action: "Corriger",
+                color: .orange
+            ) { isUnresolvedPresented = true }
+        }
+    }
+
+    private func banner(text: String, action: String, color: Color, perform: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(color)
+            Text(text).font(.caption)
+            Spacer()
+            Button(action, action: perform)
+                .controlSize(.small)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(color.opacity(0.12))
+    }
+
+    private var splitView: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
                 List(AppSection.allCases, selection: $selectedSection) { section in
@@ -89,6 +142,11 @@ struct ContentView: View {
         .sheet(isPresented: $isSettingsPresented) {
             SettingsView()
                 .environmentObject(aiSummary)
+        }
+        .onAppear {
+            // Only asked for when there is nothing usable to fall back on: an upgrade from a
+            // previous version keeps working without ever seeing this.
+            if !VaultSettings.isRootReachable { isVaultSetupPresented = true }
         }
     }
 

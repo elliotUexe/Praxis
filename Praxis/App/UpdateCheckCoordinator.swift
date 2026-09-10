@@ -21,10 +21,14 @@ final class UpdateCheckCoordinator: ObservableObject {
     @Published private(set) var noReleasePublished = false
     @Published private(set) var isUpdating = false
     @Published private(set) var updateStatusText: String?
+    /// Every published release, newest first, so a version that turns out to be worse can be
+    /// backed out of without waiting for a fix.
+    @Published private(set) var availableVersions: [(version: String, dmgURL: URL)] = []
 
     /// Matches the repo Praxis is actually published to (see `git remote -v`) — update
     /// this if the GitHub account/repo ever moves again.
     private static let apiURL = URL(string: "https://api.github.com/repos/elliotUexe/Praxis/releases/latest")!
+    private static let allReleasesURL = URL(string: "https://api.github.com/repos/elliotUexe/Praxis/releases?per_page=30")!
 
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
@@ -67,9 +71,36 @@ final class UpdateCheckCoordinator: ObservableObject {
             latestDMGURL = release.assets
                 .first { $0.name.hasSuffix(".dmg") }
                 .flatMap { URL(string: $0.browserDownloadURL) }
+            await loadAvailableVersions()
         } catch {
             lastError = "Vérification impossible : \(error.localizedDescription)"
         }
+    }
+
+    /// The full release list, for the rollback picker.
+    ///
+    /// A caveat worth knowing rather than hiding: going back replaces the application, not
+    /// the database. A build older than a schema change may not be able to open a store that
+    /// has already been migrated — which is why `CourseMigration` only ever *adds* fields,
+    /// and why it copies the store aside before its first run.
+    private func loadAvailableVersions() async {
+        var request = URLRequest(url: Self.allReleasesURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let releases = try? JSONDecoder().decode([GitHubRelease].self, from: data) else { return }
+
+        availableVersions = releases.compactMap { release in
+            guard let asset = release.assets.first(where: { $0.name.hasSuffix(".dmg") }),
+                  let url = URL(string: asset.browserDownloadURL) else { return nil }
+            return (release.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "v")), url)
+        }
+    }
+
+    /// Installs a specific version through the same path as an update — the mechanism does
+    /// not care whether the target is newer or older.
+    func install(version: String) async {
+        guard let match = availableVersions.first(where: { $0.version == version }) else { return }
+        await downloadAndInstall(dmgURL: match.dmgURL, label: version)
     }
 
     /// Downloads the .dmg, mounts it, stages the .app, then hands off to a detached shell
@@ -77,7 +108,12 @@ final class UpdateCheckCoordinator: ObservableObject {
     /// exit before swapping `/Applications/Praxis.app` and relaunching — can't replace our
     /// own running executable in place, so a helper outside our process tree does it.
     func downloadAndInstallUpdate() async {
-        guard let dmgURL = latestDMGURL, !isUpdating else { return }
+        guard let dmgURL = latestDMGURL else { return }
+        await downloadAndInstall(dmgURL: dmgURL, label: latestVersion ?? "")
+    }
+
+    private func downloadAndInstall(dmgURL: URL, label: String) async {
+        guard !isUpdating else { return }
         isUpdating = true
         defer { isUpdating = false }
         do {

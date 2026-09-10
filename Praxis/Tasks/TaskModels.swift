@@ -35,20 +35,47 @@ enum TaskType: String, Codable, CaseIterable {
 
 @Model
 final class Course {
-    @Attribute(.unique) var id: String   // vault-relative path, e.g. "01_IMT/2A/INP/Automatique"
+    /// Frozen at whatever it was when the row was created — a path relative to the vault
+    /// root of the day. Deliberately never rewritten: it is the unique key, and an older
+    /// build of Praxis reads it as its course path. Rewriting it would leave a rolled-back
+    /// version pointing at folders it cannot find.
+    @Attribute(.unique) var id: String
     var displayName: String
-    var pole: String                     // "INP" | "GEM"
-    var year: String                     // "1A" | "2A"
+    /// Kept for the same reason as `id`, and no longer authoritative: with the tree shape
+    /// configurable, the levels above a course are read from its path rather than stored.
+    var pole: String
+    var year: String
+
+    /// The identity that survives the folder being moved or renamed, matching the id in the
+    /// folder's own `CourseMarker`. Nil on rows created before 0.4.2, until the migration
+    /// resolves them.
+    var stableID: String?
+    /// Current location, relative to the configured root. Mutable: this is what a relocation
+    /// updates, leaving `stableID` untouched.
+    var relativePath: String?
 
     @Relationship(deleteRule: .cascade, inverse: \PraxisTask.course)
     var tasks: [PraxisTask] = []
 
-    init(id: String, displayName: String, pole: String, year: String) {
+    init(
+        id: String,
+        displayName: String,
+        pole: String = "",
+        year: String = "",
+        stableID: String? = nil,
+        relativePath: String? = nil
+    ) {
         self.id = id
         self.displayName = displayName
         self.pole = pole
         self.year = year
+        self.stableID = stableID
+        self.relativePath = relativePath
     }
+
+    /// Where this course lives now, falling back to the legacy path for a row the migration
+    /// has not reached.
+    var resolvedRelativePath: String { relativePath ?? id }
 }
 
 @Model
