@@ -8,10 +8,14 @@ import SwiftUI
 /// each other and with the app's own accent without ranking anything.
 ///
 /// Now the date leads, in a fixed-width column so the countdowns form a vertical rail the
-/// eye can run down. Colour is functional and scarce: red for late, accent for this week,
-/// grey for everything else. The type is a monochrome glyph — in a list, colour has to mean
-/// urgency; distinguishing the five types by hue belongs to the type picker, where you are
-/// actually choosing between them.
+/// eye can run down: red for late, accent for this week, grey for everything else.
+///
+/// The type glyph carries its own colour. It was monochrome at first, on the argument that
+/// in a list colour should only ever mean urgency — but a wall of grey icons reads as
+/// decoration rather than as information, and telling a rendu from a révision at a glance
+/// is worth more than the purity. The one overlap to know about is that a Rendu's red icon
+/// and an overdue countdown are the same hue; they sit in different columns, and the icon
+/// is small enough not to compete.
 struct TaskRowView: View {
     let task: PraxisTask
     let onToggleDone: () -> Void
@@ -35,8 +39,11 @@ struct TaskRowView: View {
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
                     Image(systemName: task.type.iconName)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        // A notch larger than the caption2 it started at: at that size the
+                        // colour was too small a patch to register as a signal.
+                        .font(.caption)
+                        .foregroundStyle(task.isDone ? AnyShapeStyle(.tertiary) : AnyShapeStyle(task.type.color))
+                        .help(task.type.displayName)
                     Text(task.title)
                         .strikethrough(task.isDone)
                         .foregroundStyle(task.isDone ? .secondary : .primary)
