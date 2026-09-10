@@ -33,6 +33,8 @@ struct RecordingSectionView: View {
 
             if session.recordingState == .recording || session.recordingState == .paused {
                 chronoView
+                InputLevelMeter(display: transcription.display)
+                    .frame(maxWidth: 260)
             }
 
             courseDestinationRow

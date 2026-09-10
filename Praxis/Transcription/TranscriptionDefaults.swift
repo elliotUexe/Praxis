@@ -36,6 +36,37 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+/// The two gates that decide whether Whisper keeps a segment or throws it away.
+///
+/// Both ship at Whisper's own defaults, which are calibrated for clean audio. In a noisy
+/// lecture hall they cost text: `noSpeech` classes a faint voice as silence, and
+/// `compressionRatio` mistakes a hesitant transcription for a hallucination and drops it.
+/// Loosening them trades approximate text for missing text — which is the right trade when
+/// the alternative is a hole in the transcript, but it is a trade, so it is a setting rather
+/// than a new default.
+enum TranscriptionThresholds {
+    static let noSpeechKey = "noSpeechThreshold"
+    static let compressionRatioKey = "compressionRatioThreshold"
+
+    static let defaultNoSpeech = 0.6
+    static let defaultCompressionRatio = 2.4
+
+    /// Above this probability of "no speech", a segment is discarded. Lower keeps more.
+    static let noSpeechRange = 0.2...0.9
+    /// Above this repetition ratio, a segment is treated as a hallucination. Higher keeps
+    /// more.
+    static let compressionRatioRange = 1.8...4.0
+
+    /// `UserDefaults.double(forKey:)` returns 0 for an unset key, which would silently mean
+    /// "discard nothing" rather than "use the default" — hence the object lookup.
+    private static func stored(_ key: String, fallback: Double) -> Double {
+        (UserDefaults.standard.object(forKey: key) as? Double) ?? fallback
+    }
+
+    static var noSpeech: Double { stored(noSpeechKey, fallback: defaultNoSpeech) }
+    static var compressionRatio: Double { stored(compressionRatioKey, fallback: defaultCompressionRatio) }
+}
+
 /// The decoding options every transcription path shares.
 ///
 /// Live, refinement and import each carried their own identical copy, which is how
@@ -66,8 +97,8 @@ enum TranscriptionDefaults {
             // passing it unconditionally keeps the two settings from having to agree.
             detectLanguage: language == .auto,
             skipSpecialTokens: true,
-            compressionRatioThreshold: 2.4,
-            noSpeechThreshold: 0.6
+            compressionRatioThreshold: Float(TranscriptionThresholds.compressionRatio),
+            noSpeechThreshold: Float(TranscriptionThresholds.noSpeech)
         )
     }
 }

@@ -18,6 +18,11 @@ struct SettingsView: View {
     @State private var inputDevice: AudioInputGain.Device?
     @State private var inputGain: Double = 0
 
+    @AppStorage(TranscriptionThresholds.noSpeechKey)
+    private var noSpeechThreshold = TranscriptionThresholds.defaultNoSpeech
+    @AppStorage(TranscriptionThresholds.compressionRatioKey)
+    private var compressionRatioThreshold = TranscriptionThresholds.defaultCompressionRatio
+
     var body: some View {
         VStack(spacing: 0) {
             TabView {
@@ -118,6 +123,10 @@ struct SettingsView: View {
 
             inputGainSection
 
+            Divider()
+
+            thresholdSection
+
             Spacer(minLength: 0)
         }
         .onAppear(perform: loadInputDevice)
@@ -169,6 +178,64 @@ struct SettingsView: View {
             Button("Actualiser", systemImage: "arrow.clockwise", action: loadInputDevice)
                 .font(.caption)
                 .controlSize(.small)
+        }
+    }
+
+    /// Left at Whisper's own defaults out of the box. They are calibrated for clean audio
+    /// and they cost text in a noisy hall, but loosening them buys approximate text at the
+    /// price of accuracy — a trade worth offering, not worth making on Pierre's behalf.
+    private var thresholdSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Filtrage").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Valeurs par défaut") {
+                    noSpeechThreshold = TranscriptionThresholds.defaultNoSpeech
+                    compressionRatioThreshold = TranscriptionThresholds.defaultCompressionRatio
+                }
+                .font(.caption2)
+                .controlSize(.small)
+                .disabled(
+                    noSpeechThreshold == TranscriptionThresholds.defaultNoSpeech
+                        && compressionRatioThreshold == TranscriptionThresholds.defaultCompressionRatio
+                )
+            }
+
+            thresholdSlider(
+                title: "Seuil de silence",
+                value: $noSpeechThreshold,
+                range: TranscriptionThresholds.noSpeechRange,
+                help: "Plus bas, une voix faible est moins souvent prise pour du silence."
+            )
+
+            thresholdSlider(
+                title: "Seuil de répétition",
+                value: $compressionRatioThreshold,
+                range: TranscriptionThresholds.compressionRatioRange,
+                help: "Plus haut, un passage hésitant est moins souvent jeté comme hallucination."
+            )
+        }
+    }
+
+    private func thresholdSlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        help: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).font(.caption2)
+                Spacer()
+                Text(String(format: "%.2f", value.wrappedValue))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Slider(value: value, in: range)
+            Text(help)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

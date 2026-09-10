@@ -29,6 +29,10 @@ final class LiveTranscriptDisplay: ObservableObject {
     /// because the view is thrown away and rebuilt constantly, and these have to reach
     /// `writeTranscript()`.
     @Published fileprivate(set) var flags: [TranscriptFlag] = []
+    /// Peak amplitude of the most recent capture buffer, 0…1 linear. Sampled here rather
+    /// than polled by the view because it belongs to the same tick as the text: it changes
+    /// several times a second, and it must not be published on the coordinator itself.
+    @Published fileprivate(set) var inputPeak: Float = 0
 }
 
 @MainActor
@@ -161,6 +165,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.unconfirmedText = newState.unconfirmedSegments.map(\.text).joined(separator: " ")
+                self.sampleInputLevel()
                 self.ingest(confirmedSegments: newState.confirmedSegments)
             }
         }
@@ -349,6 +354,20 @@ final class LiveTranscriptionCoordinator: ObservableObject {
                 }
             }
         }
+    }
+
+    /// WhisperKit already measures the energy of every buffer it captures and nothing was
+    /// reading it. Surfacing it is what turns "the transcript is bad" into a number: a
+    /// lecturer who never lifts the meter off the floor is a capture problem, one who
+    /// registers clearly is not.
+    private func sampleInputLevel() {
+        // `audioEnergy` is on the concrete `AudioProcessor`, not on the `AudioProcessing`
+        // protocol `whisperKit.audioProcessor` is typed as. The cast is the default
+        // implementation WhisperKit builds for itself; if that ever changes the meter goes
+        // quiet rather than the recording breaking.
+        guard let processor = whisperKit?.audioProcessor as? AudioProcessor,
+              let latest = processor.audioEnergy.last else { return }
+        display.inputPeak = latest.max
     }
 
     private func ingest(confirmedSegments: [TranscriptionSegment]) {
