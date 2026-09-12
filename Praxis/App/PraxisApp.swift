@@ -12,6 +12,7 @@ struct PraxisApp: App {
     @StateObject private var localLLM = LocalLLMCoordinator()
     @StateObject private var focusTimer = FocusTimerCoordinator()
     @StateObject private var updateChecker = UpdateCheckCoordinator()
+    @StateObject private var mcpServer = MCPServerCoordinator()
 
     var body: some Scene {
         WindowGroup("Praxis", id: "main") {
@@ -24,8 +25,14 @@ struct PraxisApp: App {
                 .environmentObject(localLLM)
                 .environmentObject(focusTimer)
                 .environmentObject(updateChecker)
+                .environmentObject(mcpServer)
                 .modelContainer(taskStore.modelContainer)
                 .tint(.praxisAccent)
+                .task {
+                    // Started with the window rather than in `init`: it needs the store,
+                    // and the store's own launch-time migration has to be done first.
+                    await mcpServer.start(taskStore: taskStore)
+                }
         }
 
         MenuBarExtra {

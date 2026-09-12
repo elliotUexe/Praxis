@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// 3 onglets natifs (IA / Vault / À propos) — remplace l'ancien `VStack` plat unique où
 /// clés API, modèle local et mise à jour s'empilaient sans hiérarchie, par le handoff design.
@@ -8,6 +9,7 @@ struct SettingsView: View {
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
+    @EnvironmentObject private var mcpServer: MCPServerCoordinator
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
     @State private var anthropicKey: String = KeychainStore.get("anthropic_api_key") ?? ""
@@ -19,6 +21,8 @@ struct SettingsView: View {
 
     @State private var isVaultSetupPresented = false
     @State private var rollbackVersion = ""
+    @State private var mcpEnabled = MCPServerCoordinator.isEnabled
+    @State private var mcpCopied = false
     @State private var inputDevice: AudioInputGain.Device?
     @State private var inputGain: Double = 0
 
@@ -36,6 +40,8 @@ struct SettingsView: View {
                     .tabItem { Label("IA", systemImage: "sparkles") }
                 vaultTab
                     .tabItem { Label("Vault", systemImage: "folder") }
+                mcpTab
+                    .tabItem { Label("MCP", systemImage: "point.3.connected.trianglepath.dotted") }
                 aboutTab
                     .tabItem { Label("À propos", systemImage: "info.circle") }
             }
@@ -276,6 +282,79 @@ struct SettingsView: View {
                 session.reloadCourses()
                 taskStore.migrateCourses()
             }
+        }
+    }
+
+    /// Same shape as the Obsidian entry already in Claude Desktop's configuration, so the
+    /// two read as one family: an in-app server on a loopback port, a bearer token, and
+    /// `mcp-remote` bridging the client's stdio to it.
+    private var mcpTab: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle("Serveur MCP", isOn: $mcpEnabled)
+                .onChange(of: mcpEnabled) {
+                    MCPServerCoordinator.isEnabled = mcpEnabled
+                    Task {
+                        if mcpEnabled { await mcpServer.start(taskStore: taskStore) } else { await mcpServer.stop() }
+                    }
+                }
+            Text("Permet à Claude (Cowork, Claude Code) de lire et créer des tâches directement dans Praxis. Local à cette machine uniquement.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(mcpServer.isRunning ? Color.green : Color.secondary)
+                    .frame(width: 7, height: 7)
+                Text(mcpServer.isRunning ? "En écoute sur \(MCPServerCoordinator.endpointURL)" : "Arrêté")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if mcpServer.isRunning {
+                    Text("· \(mcpServer.requestCount) requête\(mcpServer.requestCount > 1 ? "s" : "")")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            if let error = mcpServer.lastError {
+                Text(error).font(.caption2).foregroundStyle(.red)
+            }
+
+            Divider()
+
+            Text("Configuration Claude Desktop").font(.caption).foregroundStyle(.secondary)
+            Text("À ajouter dans mcpServers de claude_desktop_config.json, à côté de l'entrée obsidian.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                Text(MCPServerCoordinator.claudeDesktopConfiguration)
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 120)
+            .padding(6)
+            .background(Color.gray.opacity(0.08))
+            .cornerRadius(6)
+
+            HStack {
+                Button(mcpCopied ? "Copié" : "Copier la configuration") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(MCPServerCoordinator.claudeDesktopConfiguration, forType: .string)
+                    mcpCopied = true
+                }
+                .controlSize(.small)
+                Spacer()
+                Button("Régénérer le jeton") {
+                    mcpServer.regenerateToken()
+                    mcpCopied = false
+                    Task { await mcpServer.restart(taskStore: taskStore) }
+                }
+                .controlSize(.small)
+                .help("Invalide l'ancien jeton : la configuration côté Claude devra être mise à jour.")
+            }
+
+            Spacer(minLength: 0)
         }
     }
 

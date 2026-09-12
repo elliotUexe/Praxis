@@ -6,6 +6,12 @@ options:
   createIntermediateGroups: true
 
 packages:
+  # Official MCP SDK: protocol, tool registration, and an HTTP server transport that is
+  # framework-agnostic (it hands us `handleRequest`, we bring the listener). Pulls only
+  # swift-system, swift-log and eventsource — no NIO, no Vapor.
+  MCPSwiftSDK:
+    url: https://github.com/modelcontextprotocol/swift-sdk
+    from: 0.12.0
   ArgmaxOSSSwift:
     url: https://github.com/argmaxinc/argmax-oss-swift
     from: 1.0.0
@@ -49,6 +55,7 @@ targets:
       - path: Praxis/Transcription
       - path: Praxis/AI
       - path: Praxis/Tasks
+      - path: Praxis/MCP
       - path: Praxis/Resources/Assets.xcassets
     info:
       path: Praxis/Resources/Info.plist
@@ -86,6 +93,8 @@ targets:
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_STYLE: Automatic
     dependencies:
+      - package: MCPSwiftSDK
+        product: MCP
       - package: ArgmaxOSSSwift
         product: WhisperKit
       - package: MLXSwiftLM
