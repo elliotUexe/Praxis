@@ -79,6 +79,31 @@ enum CourseMigration {
         return outcome
     }
 
+    /// Folds rows that share a `stableID` into one.
+    ///
+    /// Seen in the field two days after 0.4.2: two `Automatique` rows carrying the same
+    /// marker id, one legacy with seven tasks, one created since with two. It can only
+    /// arise from `findOrCreateCourse` running at a moment the legacy row had not yet been
+    /// anchored — whatever the exact trigger was, a client asking for the course list
+    /// would have been handed two ids for one subject. The legacy row wins, its tasks are
+    /// preserved and the newer row's tasks move over; nothing is deleted but the empty row.
+    static func mergeDuplicates(context: ModelContext) -> Int {
+        guard let courses = try? context.fetch(FetchDescriptor<Course>()) else { return 0 }
+        let grouped = Dictionary(grouping: courses.filter { $0.stableID != nil }, by: { $0.stableID! })
+        var merged = 0
+        for (_, group) in grouped where group.count > 1 {
+            // A legacy row is one whose frozen `id` still carries the old root prefix and
+            // so differs from its current relative path. Prefer it: it is the older row.
+            let keeper = group.first { $0.id != $0.resolvedRelativePath } ?? group[0]
+            for duplicate in group where duplicate !== keeper {
+                for task in duplicate.tasks { task.course = keeper }
+                context.delete(duplicate)
+                merged += 1
+            }
+        }
+        return merged
+    }
+
     /// Confirms a known course is still where it says, and follows it if it moved.
     ///
     /// The marker search covers the ordinary case — a folder dragged elsewhere inside the

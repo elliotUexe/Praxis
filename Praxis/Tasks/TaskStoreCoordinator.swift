@@ -80,6 +80,7 @@ final class TaskStoreCoordinator: ObservableObject {
         }
 
         let outcome = CourseMigration.run(context: modelContext, root: VaultSettings.root)
+        _ = CourseMigration.mergeDuplicates(context: modelContext)
         unresolvedCourses = outcome.unresolved
         save()
     }
@@ -187,11 +188,13 @@ final class TaskStoreCoordinator: ObservableObject {
             existing.displayName = VaultSettings.displayName(forRelativePath: vaultPath)
             return existing
         }
-        // A row from before markers existed, still keyed by its old path.
+        // A row from before markers existed, still keyed by its old path — or one created
+        // with the current path as its id. Either way it is this course, not a new one.
         if let legacy = try? modelContext.fetch(
-            FetchDescriptor<Course>(predicate: #Predicate { $0.relativePath == vaultPath })
+            FetchDescriptor<Course>(predicate: #Predicate { $0.relativePath == vaultPath || $0.id == vaultPath })
         ).first {
             legacy.stableID = markerID
+            legacy.relativePath = vaultPath
             return legacy
         }
 
