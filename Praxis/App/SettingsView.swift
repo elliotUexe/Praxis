@@ -46,7 +46,10 @@ struct SettingsView: View {
                     .tabItem { Label("À propos", systemImage: "info.circle") }
             }
             .padding(20)
-            .frame(width: 380, height: 440)
+            // Sized for the Audio tab, which grew to language + input level + two
+            // thresholds: at the former 380×440 its bottom slider sat on the sheet's edge
+            // and the helper texts wrapped into each other.
+            .frame(width: 520, height: 620)
 
             Divider()
             HStack {
@@ -113,6 +116,13 @@ struct SettingsView: View {
     }
 
     private var audioTab: some View {
+        ScrollView {
+            audioTabContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var audioTabContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Langue des cours").font(.caption).foregroundStyle(.secondary)
