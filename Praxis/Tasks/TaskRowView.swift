@@ -47,6 +47,12 @@ struct TaskRowView: View {
                     Text(task.title)
                         .strikethrough(task.isDone)
                         .foregroundStyle(task.isDone ? .secondary : .primary)
+                    if !task.attachments.isEmpty {
+                        Image(systemName: "paperclip")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .help("\(task.attachments.count) pièce\(task.attachments.count > 1 ? "s" : "") jointe\(task.attachments.count > 1 ? "s" : "")")
+                    }
                     if task.needsReview {
                         Text("à relire")
                             .font(.caption2)

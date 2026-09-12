@@ -15,7 +15,7 @@ final class TaskStoreCoordinator: ObservableObject {
     @Published private(set) var unresolvedCourses: [Course] = []
 
     init() {
-        let schema = Schema([Course.self, PraxisTask.self, RevisionBlock.self, TaskComment.self, Subtask.self, FocusSession.self])
+        let schema = Schema([Course.self, PraxisTask.self, RevisionBlock.self, TaskComment.self, Subtask.self, FocusSession.self, TaskAttachment.self])
         // Stored outside the vault, deliberately: this is Praxis's authoritative SwiftData
         // store (SQLite + WAL). Living inside the vault risks obsidian-livesync touching
         // the WAL file mid-write. The vault only ever receives explicit, on-demand exports
@@ -81,6 +81,65 @@ final class TaskStoreCoordinator: ObservableObject {
 
         let outcome = CourseMigration.run(context: modelContext, root: VaultSettings.root)
         unresolvedCourses = outcome.unresolved
+        save()
+    }
+
+    /// Attaches a file to a task, copying it into the course's `03 - TD-TP` folder first if
+    /// it lives outside the vault. Returns nil, with `lastError` set, when there is nowhere
+    /// to copy to: a file from Downloads dropped on a task with no course has no home.
+    @discardableResult
+    func attach(fileURL: URL, to task: PraxisTask) -> TaskAttachment? {
+        let source = fileURL.standardizedFileURL
+        let relative: String
+
+        if let inVault = VaultSettings.relativePath(for: source), !inVault.isEmpty {
+            relative = inVault
+        } else {
+            guard let coursePath = task.course?.resolvedRelativePath else {
+                lastError = "Ce fichier n'est pas dans le vault et la tâche n'a pas de matière où le ranger."
+                return nil
+            }
+            let folder = VaultSettings.url(forRelativePath: coursePath).appendingPathComponent("03 - TD-TP")
+            let destination = Self.uniqueDestination(for: source.lastPathComponent, in: folder)
+            do {
+                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: source, to: destination)
+            } catch {
+                lastError = "Copie impossible dans le dossier de la matière : \(error.localizedDescription)"
+                return nil
+            }
+            guard let copied = VaultSettings.relativePath(for: destination) else { return nil }
+            relative = copied
+        }
+
+        if let existing = task.attachments.first(where: { $0.relativePath == relative }) {
+            return existing
+        }
+        let attachment = TaskAttachment(relativePath: relative, displayName: (relative as NSString).lastPathComponent, task: task)
+        modelContext.insert(attachment)
+        task.updatedAt = Date()
+        save()
+        return attachment
+    }
+
+    /// `sujet.pdf`, then `sujet 2.pdf`, `sujet 3.pdf`: a second drop of a same-named file
+    /// must never overwrite the first, which may be a different document entirely.
+    private static func uniqueDestination(for name: String, in folder: URL) -> URL {
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var candidate = folder.appendingPathComponent(name)
+        var counter = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            let numbered = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            candidate = folder.appendingPathComponent(numbered)
+            counter += 1
+        }
+        return candidate
+    }
+
+    func detach(_ attachment: TaskAttachment) {
+        attachment.task?.updatedAt = Date()
+        modelContext.delete(attachment)
         save()
     }
 

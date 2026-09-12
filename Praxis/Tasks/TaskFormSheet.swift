@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import AppKit
+import UniformTypeIdentifiers
 
 /// Full CRUD editor for a single task — used for both creation (`existingTask == nil`) and
 /// editing. Every field is editable regardless of the task's `origin`: `needsReview` is a
@@ -32,6 +33,7 @@ struct TaskFormSheet: View {
     /// Walked once when the sheet appears. Building it inside `body` meant re-reading the
     /// whole folder tree on every keystroke in the title field.
     @State private var courseTree: [CourseFolderNode] = []
+    @State private var isAttachmentDropTargeted = false
 
     init(existingTask: PraxisTask?) {
         self.existingTask = existingTask
@@ -98,6 +100,8 @@ struct TaskFormSheet: View {
             if let existingTask {
                 Divider()
                 subtasksSection(for: existingTask)
+                Divider()
+                attachmentsSection(for: existingTask)
             }
 
             if let existingTask, !existingTask.comments.isEmpty {
@@ -266,6 +270,91 @@ struct TaskFormSheet: View {
                     .disabled(newSubtaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
+    }
+
+    // MARK: - Pièces jointes
+
+    /// Shortcuts to vault files. Dropping a file from inside the vault references it in
+    /// place; one from outside is copied into the course's `03 - TD-TP` folder first, so
+    /// the attachment always points into the vault. Only shown once the task exists, like
+    /// subtasks, since a not-yet-saved task has no row to attach to.
+    private func attachmentsSection(for task: PraxisTask) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Pièces jointes").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    pickAttachments(for: task)
+                } label: {
+                    Label("Ajouter…", systemImage: "paperclip")
+                }
+                .font(.caption)
+            }
+
+            ForEach(task.attachments.sorted { $0.addedAt < $1.addedAt }, id: \.id) { attachment in
+                HStack(spacing: 8) {
+                    Image(systemName: attachment.exists ? "doc" : "doc.badge.exclamationmark")
+                        .foregroundStyle(attachment.exists ? Color.secondary : Color.orange)
+                    Button(attachment.displayName) {
+                        NSWorkspace.shared.open(attachment.url)
+                    }
+                    .buttonStyle(.link)
+                    .help(attachment.relativePath)
+                    Spacer()
+                    Button {
+                        taskStore.detach(attachment)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Retirer le raccourci. Le fichier reste dans le vault.")
+                }
+                .font(.callout)
+            }
+
+            Text(task.course == nil
+                 ? "Déposez un fichier du vault ici."
+                 : "Déposez un fichier ici. Hors du vault, il sera copié dans « 03 - TD-TP » de la matière.")
+                .font(.caption2)
+                .foregroundStyle(isAttachmentDropTargeted ? AnyShapeStyle(Color.praxisAccent) : AnyShapeStyle(.tertiary))
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4]))
+                        .foregroundStyle(isAttachmentDropTargeted ? Color.praxisAccent : Color.secondary.opacity(0.3))
+                )
+                .onDrop(of: [.fileURL], isTargeted: $isAttachmentDropTargeted) { providers in
+                    handleAttachmentDrop(providers, for: task)
+                }
+        }
+    }
+
+    private func pickAttachments(for task: PraxisTask) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.directoryURL = task.course.map { VaultSettings.url(forRelativePath: $0.resolvedRelativePath) } ?? VaultSettings.root
+        panel.message = "Choisissez les fichiers à joindre"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls {
+            taskStore.attach(fileURL: url, to: task)
+        }
+    }
+
+    private func handleAttachmentDrop(_ providers: [NSItemProvider], for task: PraxisTask) -> Bool {
+        var accepted = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            accepted = true
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    taskStore.attach(fileURL: url, to: task)
+                }
+            }
+        }
+        return accepted
     }
 
     private func addManualSubtask(to task: PraxisTask) {

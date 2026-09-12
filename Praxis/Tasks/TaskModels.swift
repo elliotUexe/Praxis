@@ -126,6 +126,9 @@ final class PraxisTask {
     @Relationship(deleteRule: .cascade, inverse: \Subtask.parentTask)
     var subtasks: [Subtask] = []
 
+    @Relationship(deleteRule: .cascade, inverse: \TaskAttachment.task)
+    var attachments: [TaskAttachment] = []
+
     var type: TaskType {
         get { TaskType(rawValue: typeRaw) ?? .anticipation }
         set { typeRaw = newValue.rawValue }
@@ -285,4 +288,34 @@ final class FocusSession {
         self.linkedTask = linkedTask
         self.linkedSubtask = linkedSubtask
     }
+}
+
+/// A shortcut to a file in the vault, attached to a task.
+///
+/// Only ever a reference, never a copy held by Praxis: the vault is where documents live,
+/// and a task pointing at a TD subject or a professor's PDF should open the one file that
+/// is already there. A file dropped from outside the vault is copied into the course's
+/// `03 - TD-TP` folder first, then referenced like any other — so the invariant holds
+/// that every attachment resolves to a vault path.
+///
+/// Stored relative to the configured root, for the same reason course paths are: moving
+/// the vault changes one setting, not every attachment.
+@Model
+final class TaskAttachment {
+    @Attribute(.unique) var id: UUID
+    var relativePath: String
+    var displayName: String
+    var addedAt: Date
+    var task: PraxisTask?
+
+    init(relativePath: String, displayName: String, task: PraxisTask? = nil) {
+        self.id = UUID()
+        self.relativePath = relativePath
+        self.displayName = displayName
+        self.addedAt = Date()
+        self.task = task
+    }
+
+    var url: URL { VaultSettings.url(forRelativePath: relativePath) }
+    var exists: Bool { FileManager.default.fileExists(atPath: url.path) }
 }
