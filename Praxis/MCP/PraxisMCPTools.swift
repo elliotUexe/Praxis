@@ -398,15 +398,18 @@ struct PraxisMCPTools: @unchecked Sendable {
         return text
     }
 
+    /// Optionals are detected through `Mirror`, not through a cast. `case let x as Any?`
+    /// matches *every* value — anything can be wrapped in an optional — so a plain string
+    /// was wrapped, unwrapped, and fed straight back in, until the stack ran out. That took
+    /// the whole app down on the first real tool call in 0.4.3; the harness had not caught
+    /// it because its stand-in tool never went through this path.
     private static func stripOptionals(_ value: Any) -> Any {
-        switch value {
-        case let dictionary as [String: Any]:
-            return dictionary.mapValues(stripOptionals)
-        case let array as [Any]:
-            return array.map(stripOptionals)
-        case let optional as Any?:
-            if let inner = optional { return stripOptionals(inner) }
-            return NSNull()
-        }
+        if let dictionary = value as? [String: Any] { return dictionary.mapValues(stripOptionals) }
+        if let array = value as? [Any] { return array.map(stripOptionals) }
+        let mirror = Mirror(reflecting: value)
+        guard mirror.displayStyle == .optional else { return value }
+        // `.some` has exactly one child, the wrapped value; `.none` has none.
+        guard let wrapped = mirror.children.first?.value else { return NSNull() }
+        return stripOptionals(wrapped)
     }
 }
