@@ -59,9 +59,7 @@ struct TaskFormSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .onChange(of: title) { isDeleteConfirming = false }
 
-            TextField("Détail (optionnel)", text: $detail, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
+            GrowingTextEditor(text: $detail, placeholder: "Détail (optionnel)", minHeight: 44, maxHeight: 180)
                 .onChange(of: detail) { isDeleteConfirming = false }
 
             HStack(spacing: 6) {
@@ -583,6 +581,72 @@ private struct SubtaskDateButton: View {
                 }
             }
             .padding(12)
+        }
+    }
+}
+
+/// A text area that grows with its content, up to a ceiling, then scrolls.
+///
+/// `TextField(axis: .vertical)` grows but never shows a scrollbar, and `TextEditor` shows
+/// one but fills whatever frame it is given. This measures the text with a hidden `Text`
+/// laid out at the same width and font, and gives the editor exactly that height clamped
+/// between the two bounds — so a one-line detail takes one line, a long one stops at
+/// `maxHeight` and gets a scrollbar instead of pushing the rest of the form off screen.
+private struct GrowingTextEditor: View {
+    @Binding var text: String
+    let placeholder: String
+    let minHeight: CGFloat
+    let maxHeight: CGFloat
+
+    @State private var measuredHeight: CGFloat = 0
+
+    private var height: CGFloat { min(max(measuredHeight, minHeight), maxHeight) }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            // Same font and insets as the editor, so the measure matches what is shown.
+            Text(text.isEmpty ? " " : text)
+                .font(.body)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .opacity(0)
+                .background(
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: MeasuredHeightKey.self, value: geometry.size.height)
+                    }
+                )
+
+            if text.isEmpty {
+                Text(placeholder)
+                    .font(.body)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+            }
+
+            TextEditor(text: $text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 4)
+        }
+        .frame(height: height)
+        .background(Color(nsColor: .textBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
+        )
+        .onPreferenceChange(MeasuredHeightKey.self) { measuredHeight = $0 }
+    }
+
+    private struct MeasuredHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = max(value, nextValue())
         }
     }
 }

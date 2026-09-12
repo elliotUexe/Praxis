@@ -21,8 +21,10 @@ struct PraxisMCPTools: @unchecked Sendable {
     lointaine). Toute tâche peut porter une date. Les sous-tâches sont des jalons et peuvent \
     porter leur propre date ; la date effective d'une tâche est la plus proche entre la \
     sienne et celles de ses sous-tâches non terminées — c'est elle qui compte pour planifier. \
-    Les dates sont au format AAAA-MM-JJ. Une tâche créée par un outil arrive marquée « à \
-    relire » pour que l'étudiant la valide.
+    Les dates sont au format AAAA-MM-JJ. Une tâche créée ou modifiée par un outil est marquée \
+    « à relire » et reçoit un commentaire horodaté décrivant ce qui a changé, pour que \
+    l'étudiant voie et valide ce qui vient d'un agent. Les pièces jointes sont des raccourcis \
+    vers des fichiers du vault ; reject_task archive une tâche de façon réversible.
     """
 
     // MARK: - Catalogue
@@ -120,6 +122,27 @@ struct PraxisMCPTools: @unchecked Sendable {
                 "properties": ["taskId": ["type": "string"], "text": ["type": "string"]],
                 "required": ["taskId", "text"]
             ]
+        ),
+        Tool(
+            name: "add_attachment",
+            description: "Joint un fichier à une tâche, comme raccourci. Le chemin peut être absolu ou relatif au dossier de cours. Un fichier hors du vault est copié dans « 03 - TD-TP » de la matière de la tâche ; sans matière, il est refusé.",
+            inputSchema: [
+                "type": "object",
+                "properties": [
+                    "taskId": ["type": "string"],
+                    "path": ["type": "string", "description": "Chemin absolu, ou relatif au dossier de cours (ex. « 2A/INP/Automatique/03 - TD-TP/sujet.pdf »)."]
+                ],
+                "required": ["taskId", "path"]
+            ]
+        ),
+        Tool(
+            name: "reject_task",
+            description: "Archive une tâche sans la supprimer : elle sort de toutes les listes et reste récupérable depuis « Tâches rejetées ». À utiliser pour retirer une tâche créée par erreur, pas pour marquer un travail fait.",
+            inputSchema: [
+                "type": "object",
+                "properties": ["id": ["type": "string"], "reason": ["type": "string"]],
+                "required": ["id"]
+            ]
         )
     ]
 
@@ -137,6 +160,8 @@ struct PraxisMCPTools: @unchecked Sendable {
                 case "complete_task": return try completeTask(arguments)
                 case "add_subtask": return try addSubtask(arguments)
                 case "add_comment": return try addComment(arguments)
+                case "add_attachment": return try addAttachment(arguments)
+                case "reject_task": return try rejectTask(arguments)
                 default: throw ToolError.unknownTool(name)
                 }
             }
@@ -237,21 +262,42 @@ struct PraxisMCPTools: @unchecked Sendable {
         return Self.summary(of: task)
     }
 
+    /// Every field an agent changes is named in a comment and the task goes back to « à
+    /// relire ». Without this an agent could rewrite a task the student wrote by hand and
+    /// leave nothing visible behind — the first Cowork test did exactly that and asked
+    /// whether it was intended. It was not.
     @MainActor
     private func updateTask(_ arguments: [String: Value]) throws -> Any {
         let task = try findTask(arguments["id"]?.stringValue)
-        if let title = arguments["title"]?.stringValue, !title.isEmpty { task.title = title }
+        var changed: [String] = []
+
+        if let title = arguments["title"]?.stringValue, !title.isEmpty, title != task.title {
+            task.title = title
+            changed.append("titre")
+        }
         if let rawType = arguments["type"]?.stringValue {
             guard let type = TaskType(rawValue: rawType) else { throw ToolError.invalid("type") }
-            task.type = type
+            if type != task.type { task.type = type; changed.append("type") }
         }
-        if let detail = arguments["detail"]?.stringValue { task.detail = detail.isEmpty ? nil : detail }
+        if let detail = arguments["detail"]?.stringValue {
+            let value = detail.isEmpty ? nil : detail
+            if value != task.detail { task.detail = value; changed.append("détail") }
+        }
         if let rawDate = arguments["dueDate"]?.stringValue {
-            task.dueDate = rawDate.isEmpty ? nil : try Self.date(from: arguments["dueDate"])
+            let value = rawDate.isEmpty ? nil : try Self.date(from: arguments["dueDate"])
+            if value != task.dueDate { task.dueDate = value; changed.append("date") }
         }
-        if let minutes = arguments["estimatedDurationMinutes"]?.intValue { task.estimatedDurationMinutes = minutes }
-        if let courseID = arguments["courseId"]?.stringValue { task.course = try findCourse(courseID) }
-        task.updatedAt = Date()
+        if let minutes = arguments["estimatedDurationMinutes"]?.intValue, minutes != task.estimatedDurationMinutes {
+            task.estimatedDurationMinutes = minutes
+            changed.append("durée estimée")
+        }
+        if let courseID = arguments["courseId"]?.stringValue {
+            let course = try findCourse(courseID)
+            if course.stableID != task.course?.stableID { task.course = course; changed.append("matière") }
+        }
+
+        guard !changed.isEmpty else { return Self.summary(of: task) }
+        trace("Modifié via MCP : \(changed.joined(separator: ", ")).", on: task, markForReview: true)
         taskStore.save()
         return Self.summary(of: task)
     }
@@ -260,11 +306,45 @@ struct PraxisMCPTools: @unchecked Sendable {
     private func completeTask(_ arguments: [String: Value]) throws -> Any {
         let task = try findTask(arguments["id"]?.stringValue)
         let done = arguments["done"]?.boolValue ?? true
+        guard done != task.isDone else { return Self.summary(of: task) }
         task.isDone = done
         task.completedAt = done ? Date() : nil
-        task.updatedAt = Date()
+        trace(done ? "Marquée terminée via MCP." : "Rouverte via MCP.", on: task, markForReview: false)
         taskStore.save()
         return Self.summary(of: task)
+    }
+
+    @MainActor
+    private func rejectTask(_ arguments: [String: Value]) throws -> Any {
+        let task = try findTask(arguments["id"]?.stringValue)
+        let reason = arguments["reason"]?.stringValue
+        task.isRejected = true
+        task.needsReview = false
+        trace("Archivée via MCP" + (reason.map { " : \($0)" } ?? "") + ".", on: task, markForReview: false)
+        taskStore.save()
+        return ["ok": true, "id": task.id.uuidString, "isRejected": true]
+    }
+
+    @MainActor
+    private func addAttachment(_ arguments: [String: Value]) throws -> Any {
+        let task = try findTask(arguments["taskId"]?.stringValue)
+        guard let raw = arguments["path"]?.stringValue, !raw.isEmpty else { throw ToolError.missing("path") }
+        let url = raw.hasPrefix("/") ? URL(fileURLWithPath: raw) : VaultSettings.url(forRelativePath: raw)
+        guard FileManager.default.fileExists(atPath: url.path) else { throw ToolError.notFound("fichier \(raw)") }
+        guard taskStore.attach(fileURL: url, to: task) != nil else {
+            throw ToolError.invalid(taskStore.lastError ?? "pièce jointe refusée")
+        }
+        return Self.summary(of: task)
+    }
+
+    /// The paper trail every agent write leaves: a dated comment, and the review badge when
+    /// the change is one the student should look at.
+    @MainActor
+    private func trace(_ text: String, on task: PraxisTask, markForReview: Bool) {
+        let comment = TaskComment(text: text, source: "mcp", task: task)
+        taskStore.modelContext.insert(comment)
+        if markForReview { task.needsReview = true }
+        task.updatedAt = Date()
     }
 
     @MainActor
@@ -282,7 +362,7 @@ struct PraxisMCPTools: @unchecked Sendable {
             parentTask: task
         )
         taskStore.modelContext.insert(subtask)
-        task.updatedAt = Date()
+        trace("Jalon ajouté via MCP : « \(title) »" + (subtask.dueDate.map { " pour le \(Self.day($0))" } ?? "") + ".", on: task, markForReview: true)
         taskStore.save()
         return Self.summary(of: task)
     }
