@@ -1,8 +1,37 @@
 import SwiftUI
 import AppKit
 
-/// 3 onglets natifs (IA / Vault / À propos) — remplace l'ancien `VStack` plat unique où
-/// clés API, modèle local et mise à jour s'empilaient sans hiérarchie, par le handoff design.
+/// The settings sheet's sections.
+///
+/// Drawn by hand rather than with `TabView`: on macOS 27 a `TabView` inside a sheet lays
+/// its five tab labels on top of one another in a single narrow box ("NÀLA…" over the
+/// Audio tab), and nothing in its public API sizes that bar.
+private enum SettingsTab: String, CaseIterable, Identifiable {
+    case audio, ia, vault, mcp, about
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .audio: return "Audio"
+        case .ia: return "IA"
+        case .vault: return "Vault"
+        case .mcp: return "MCP"
+        case .about: return "À propos"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .audio: return "waveform"
+        case .ia: return "sparkles"
+        case .vault: return "folder"
+        case .mcp: return "point.3.connected.trianglepath.dotted"
+        case .about: return "info.circle"
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var updateChecker: UpdateCheckCoordinator
@@ -10,6 +39,10 @@ struct SettingsView: View {
     @EnvironmentObject private var session: AppSessionStore
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
     @EnvironmentObject private var mcpServer: MCPServerCoordinator
+    @EnvironmentObject private var transcription: LiveTranscriptionCoordinator
+    @EnvironmentObject private var importCoordinator: ImportTranscriptionCoordinator
+
+    @State private var selectedTab: SettingsTab = .audio
 
     @State private var geminiKey: String = KeychainStore.get("gemini_api_key") ?? ""
     @State private var anthropicKey: String = KeychainStore.get("anthropic_api_key") ?? ""
@@ -18,6 +51,7 @@ struct SettingsView: View {
 
     @AppStorage("appAppearance") private var appearanceRaw = AppAppearance.auto.rawValue
     @AppStorage(TranscriptionLanguage.storageKey) private var languageRaw = TranscriptionLanguage.auto.rawValue
+    @AppStorage(TranscriptionEngine.storageKey) private var engineRaw = TranscriptionEngine.whisper.rawValue
 
     @State private var isVaultSetupPresented = false
     @State private var rollbackVersion = ""
@@ -33,23 +67,16 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                audioTab
-                    .tabItem { Label("Audio", systemImage: "waveform") }
-                iaTab
-                    .tabItem { Label("IA", systemImage: "sparkles") }
-                vaultTab
-                    .tabItem { Label("Vault", systemImage: "folder") }
-                mcpTab
-                    .tabItem { Label("MCP", systemImage: "point.3.connected.trianglepath.dotted") }
-                aboutTab
-                    .tabItem { Label("À propos", systemImage: "info.circle") }
-            }
-            .padding(20)
-            // Sized for the Audio tab, which grew to language + input level + two
-            // thresholds: at the former 380×440 its bottom slider sat on the sheet's edge
-            // and the helper texts wrapped into each other.
-            .frame(width: 520, height: 620)
+            tabBar
+            Divider()
+
+            selectedContent
+                .padding(20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Sized for the Audio tab, the tallest: engine + language + input level + two
+            // thresholds. The other tabs sit at the top of the same frame instead of making
+            // the sheet jump in height when switching.
+            .frame(width: 540, height: 600)
 
             Divider()
             HStack {
@@ -58,6 +85,45 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }
             .padding(12)
+        }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 4) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button {
+                    selectedTab = tab
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: tab.systemImage)
+                            .font(.system(size: 15))
+                            .frame(height: 18)
+                        Text(tab.title)
+                            .font(.caption)
+                    }
+                    .frame(width: 72, height: 44)
+                    .contentShape(Rectangle())
+                    .foregroundStyle(selectedTab == tab ? Color.praxisAccent : Color.secondary)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7)
+                            .fill(selectedTab == tab ? Color.praxisAccent.opacity(0.14) : Color.clear)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var selectedContent: some View {
+        switch selectedTab {
+        case .audio: audioTab
+        case .ia: iaTab
+        case .vault: vaultTab
+        case .mcp: mcpTab
+        case .about: aboutTab
         }
     }
 
@@ -122,8 +188,16 @@ struct SettingsView: View {
         }
     }
 
+    private var selectedEngine: TranscriptionEngine {
+        TranscriptionEngine(rawValue: engineRaw) ?? .whisper
+    }
+
     private var audioTabContent: some View {
         VStack(alignment: .leading, spacing: 16) {
+            engineSection
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 4) {
                 Text("Langue des cours").font(.caption).foregroundStyle(.secondary)
                 Picker("Langue", selection: $languageRaw) {
@@ -133,10 +207,24 @@ struct SettingsView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                Text("Automatique détecte la langue à chaque fenêtre de 30 secondes. Forcer une langue est plus prévisible sur un cours mêlant les deux.")
+                Text(selectedEngine == .apple
+                     ? "Apple ne détecte pas la langue : Automatique utilise celle du Mac, ou le français si Apple ne la reconnaît pas. Pour un cours en anglais, choisir Anglais."
+                     : "Automatique détecte la langue à chaque fenêtre de 30 secondes. Forcer une langue est plus prévisible sur un cours mêlant les deux.")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+            // Apple checks its language asset per locale: a new language may need one.
+            .onChange(of: languageRaw) {
+                guard selectedEngine == .apple,
+                      !transcription.isSessionActive, !importCoordinator.isTranscribing,
+                      transcription.isReady || importCoordinator.isReady else { return }
+                Task {
+                    await transcription.unloadModels()
+                    importCoordinator.unloadModel()
+                    await transcription.prepare()
+                    await importCoordinator.prepare()
+                }
             }
 
             Divider()
@@ -146,10 +234,54 @@ struct SettingsView: View {
             Divider()
 
             thresholdSection
+                .disabled(selectedEngine == .apple)
+                .opacity(selectedEngine == .apple ? 0.5 : 1)
 
             Spacer(minLength: 0)
         }
         .onAppear(perform: loadInputDevice)
+    }
+
+    /// Applies to the next recording and the next import. Refused during a session
+    /// rather than swapping the recogniser underneath it.
+    private var engineSection: some View {
+        let busy = transcription.isSessionActive || importCoordinator.isTranscribing
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("Moteur de transcription").font(.caption).foregroundStyle(.secondary)
+            Picker("Moteur", selection: $engineRaw) {
+                ForEach(TranscriptionEngine.allCases) { engine in
+                    Text(engine.displayName).tag(engine.rawValue)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .disabled(busy || !TranscriptionEngine.isAppleAvailable)
+            .onChange(of: engineRaw) {
+                Task {
+                    await transcription.applyEngineSetting()
+                    await importCoordinator.applyEngineSetting()
+                }
+            }
+            Text(engineHelp(busy: busy))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func engineHelp(busy: Bool) -> String {
+        if !TranscriptionEngine.isAppleAvailable {
+            return "La reconnaissance Apple demande macOS 26 ou plus récent : Whisper est utilisé."
+        }
+        if busy {
+            return "Changement impossible pendant un enregistrement ou un import."
+        }
+        switch selectedEngine {
+        case .whisper:
+            return "Whisper turbo en direct, chaque passage repris par large-v3, large-v3 pour l'import. Plusieurs Go en mémoire ; peut sauter un passage entier."
+        case .apple:
+            return "Reconnaissance d'Apple intégrée au Mac, en direct comme à l'import. Presque rien en mémoire dans Praxis et bien plus économe ; ne saute rien, mais se trompe parfois de mot. Les seuils de filtrage ne s'appliquent pas."
+        }
     }
 
     /// The device's own capture level, not a multiplier applied afterwards. Amplifying

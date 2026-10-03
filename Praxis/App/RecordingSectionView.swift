@@ -243,7 +243,9 @@ struct RecordingSectionView: View {
 
     private var sttStatusText: String {
         if transcription.isLoadingModel || importCoordinator.isLoadingModel { return "chargement…" }
-        if transcription.isReady || importCoordinator.isReady { return "en mémoire" }
+        if transcription.isReady || importCoordinator.isReady {
+            return transcription.engine == .apple ? "Apple prête" : "en mémoire"
+        }
         return "déchargée"
     }
 

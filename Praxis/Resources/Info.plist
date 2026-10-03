@@ -22,5 +22,7 @@
 	<string>public.app-category.productivity</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Praxis a besoin d'accéder au micro pour enregistrer et transcrire vos cours.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Praxis peut utiliser la reconnaissance vocale d'Apple, sur le Mac, pour transcrire vos cours.</string>
 </dict>
 </plist>

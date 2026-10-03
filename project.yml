@@ -68,6 +68,10 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSMicrophoneUsageDescription: "Praxis a besoin d'accéder au micro pour enregistrer et transcrire vos cours."
+        # Apple's on-device recogniser (TranscriptionEngine.apple). SpeechAnalyzer did not
+        # ask for authorisation in testing, but the key costs nothing and avoids a crash
+        # if a future macOS starts requiring it.
+        NSSpeechRecognitionUsageDescription: "Praxis peut utiliser la reconnaissance vocale d'Apple, sur le Mac, pour transcrire vos cours."
         LSApplicationCategoryType: "public.app-category.productivity"
     entitlements:
       path: Praxis/Resources/Praxis.entitlements

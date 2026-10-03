@@ -142,6 +142,8 @@ struct ContentView: View {
         .sheet(isPresented: $isSettingsPresented) {
             SettingsView()
                 .environmentObject(aiSummary)
+                .environmentObject(transcription)
+                .environmentObject(importCoordinator)
         }
         .onAppear {
             // Only asked for when there is nothing usable to fall back on: an upgrade from a

@@ -59,6 +59,17 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     @Published private(set) var isRefiningReady = false
     @Published private(set) var isLoadingModel = false
     @Published var lastError: String?
+    /// The engine the loaded state belongs to. Read from the setting at `prepare()`, so a
+    /// change in Réglages never swaps the recogniser under a running session.
+    @Published private(set) var engine: TranscriptionEngine = .current
+
+    /// `AppleLiveTranscriber` only exists from macOS 26; held untyped so the coordinator
+    /// itself keeps the app's deployment target.
+    private var appleSession: AnyObject?
+    /// The locale Apple's assets were checked for, reused by `start()`.
+    private var appleLocale: Locale?
+
+    var isSessionActive: Bool { audioStreamTranscriber != nil || appleSession != nil }
 
     private var whisperKit: WhisperKit?
     private let refinementCoordinator = RefinementCoordinator()
@@ -90,7 +101,12 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         liveModelName: String = "large-v3-v20240930_turbo",
         refineModelName: String = "large-v3-v20240930_626MB"
     ) async {
-        guard whisperKit == nil, !isLoadingModel else { return }
+        guard !isReady, whisperKit == nil, !isLoadingModel else { return }
+        engine = .current
+        if engine == .apple {
+            await prepareApple()
+            return
+        }
         isLoadingModel = true
 
         async let liveLoad: Void = loadLiveModel(liveModelName)
@@ -98,6 +114,33 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         _ = await (liveLoad, refineLoad)
 
         isLoadingModel = false
+    }
+
+    /// Nothing to load into Praxis: the recogniser lives in the system. What can be
+    /// missing is the language asset, which macOS downloads once for every app.
+    private func prepareApple() async {
+        guard #available(macOS 26, *) else { return }
+        isLoadingModel = true
+        defer { isLoadingModel = false }
+        let locale = await AppleSpeech.locale()
+        do {
+            try await AppleSpeech.ensureAssets(locale: locale)
+            appleLocale = locale
+            isReady = true
+        } catch {
+            lastError = "Reconnaissance Apple indisponible : \(error.localizedDescription)"
+        }
+    }
+
+    /// Follows a change of engine in Réglages: frees whatever the old engine held and, if
+    /// transcription was loaded, prepares the new one. Never during a session — the
+    /// setting is then picked up by the next `prepare()`.
+    func applyEngineSetting() async {
+        guard !isSessionActive, TranscriptionEngine.current != engine else { return }
+        let wasLoaded = isReady || isLoadingModel
+        await unloadModels()
+        engine = .current
+        if wasLoaded { await prepare() }
     }
 
     private func loadLiveModel(_ name: String) async {
@@ -124,7 +167,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// `prepare()` reloads from the on-disk model cache (no re-download) when needed.
     /// Refuses while a stream is live rather than yanking the model out from under it.
     func unloadModels() async {
-        guard audioStreamTranscriber == nil else {
+        guard !isSessionActive else {
             lastError = "Impossible de décharger pendant un enregistrement."
             return
         }
@@ -132,24 +175,19 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         isReady = false
         await refinementCoordinator.unload()
         isRefiningReady = false
+        appleLocale = nil
     }
 
     func start(outputURL: URL) async {
+        if engine == .apple {
+            await startApple(outputURL: outputURL)
+            return
+        }
         guard let whisperKit, let tokenizer = whisperKit.tokenizer else {
             lastError = "Modèle non chargé."
             return
         }
-        displaySegments = []
-        unconfirmedText = ""
-        refinedStarts = []
-        ingestedStarts = []
-        flags = []
-        lastError = nil
-        transcriptURL = OutputFileManager.txtURL(
-            in: outputURL.deletingLastPathComponent(),
-            baseName: outputURL.deletingPathExtension().lastPathComponent
-        )
-        openWAVFile(at: outputURL)
+        resetSession(outputURL: outputURL)
 
         let decodingOptions = TranscriptionDefaults.decodingOptions()
 
@@ -184,7 +222,57 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         restartCheckpointTimer()
     }
 
+    private func resetSession(outputURL: URL) {
+        displaySegments = []
+        unconfirmedText = ""
+        refinedStarts = []
+        ingestedStarts = []
+        flags = []
+        lastError = nil
+        transcriptURL = OutputFileManager.txtURL(
+            in: outputURL.deletingLastPathComponent(),
+            baseName: outputURL.deletingPathExtension().lastPathComponent
+        )
+        openWAVFile(at: outputURL)
+    }
+
+    /// Apple's results arrive already final, so they go straight in as refined text:
+    /// there is no second pass to wait for, and nothing to dim.
+    private func startApple(outputURL: URL) async {
+        guard #available(macOS 26, *), isReady, let locale = appleLocale else {
+            lastError = "Reconnaissance Apple non prête."
+            return
+        }
+        resetSession(outputURL: outputURL)
+        let session = AppleLiveTranscriber()
+        appleSession = session
+        do {
+            try await session.start(
+                locale: locale,
+                onVolatile: { [weak self] text in self?.unconfirmedText = text },
+                onFinal: { [weak self] part in self?.ingestApple(part) },
+                onLevel: { [weak self] peak in self?.display.inputPeak = peak }
+            )
+        } catch {
+            appleSession = nil
+            wavFile = nil
+            lastError = "Impossible de démarrer la reconnaissance Apple : \(error.localizedDescription)"
+            return
+        }
+        restartCheckpointTimer()
+    }
+
+    private func ingestApple(_ part: TimedText) {
+        guard !ingestedStarts.contains(part.start) else { return }
+        ingestedStarts.insert(part.start)
+        displaySegments.append(DisplaySegment(start: part.start, end: part.end, text: part.text, isRefined: true))
+    }
+
     func stop() async {
+        if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
+            await stopApple(session)
+            return
+        }
         checkpointTimer?.invalidate()
         checkpointTimer = nil
         appendNewSamplesToWAV()
@@ -205,17 +293,50 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         audioStreamTranscriber = nil
     }
 
+    /// The microphone stops before the last WAV write, so the file ends where capture did;
+    /// the analyser then finishes the sentence in flight, and the transcript is written
+    /// once more with it.
+    @available(macOS 26, *)
+    private func stopApple(_ session: AppleLiveTranscriber) async {
+        checkpointTimer?.invalidate()
+        checkpointTimer = nil
+        await session.stop()
+        appendNewSamplesToWAV()
+        appleSession = nil
+        wavFile = nil
+        writtenSampleCount = 0
+        unconfirmedText = ""
+        writeTranscript()
+
+        if let wavURL = sessionWAVURL {
+            sessionWAVURL = nil
+            compressRecording(at: wavURL)
+        }
+    }
+
     /// `AudioStreamTranscriber` has no pause concept of its own — its polling loop just
     /// finds no new audio while the processor is paused. `pauseRecording`/`resumeRecordingLive`
     /// are AudioProcessing's documented pair for suspending/continuing the *same* `audioSamples`
     /// array, which is exactly what our absolute-time-offset segment/checkpoint indexing needs.
     func pause() {
+        if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
+            session.pause()
+        }
         whisperKit?.audioProcessor.pauseRecording()
         checkpointTimer?.invalidate()
         checkpointTimer = nil
     }
 
     func resume() {
+        if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
+            do {
+                try session.resume()
+            } catch {
+                lastError = "Reprise impossible : \(error.localizedDescription)"
+            }
+            restartCheckpointTimer()
+            return
+        }
         guard let whisperKit else { return }
         try? whisperKit.audioProcessor.resumeRecordingLive(inputDeviceID: nil, callback: nil)
         restartCheckpointTimer()
@@ -303,6 +424,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// main actor: once the write is ~640 KB instead of 160 MB it costs about a
     /// millisecond, and staying here avoids racing another writer on the same file handle.
     private func appendNewSamplesToWAV() {
+        if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
+            writeToWAV(session.drainSamples())
+            return
+        }
         guard let whisperKit, let file = wavFile else { return }
         let samples = whisperKit.audioProcessor.audioSamples
         let total = samples.count
@@ -318,14 +443,23 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         }
         guard total > writtenSampleCount else { return }
 
-        let newSamples = Array(samples[writtenSampleCount..<total])
+        if writeToWAV(Array(samples[writtenSampleCount..<total]), file: file) {
+            writtenSampleCount = total
+        }
+    }
+
+    /// Appends 16 kHz mono samples to the session's WAV. Both engines write the same
+    /// format, which is what lets `AudioCompressor` stay unaware of which one recorded.
+    @discardableResult
+    private func writeToWAV(_ newSamples: [Float], file: AVAudioFile? = nil) -> Bool {
+        guard let file = file ?? wavFile, !newSamples.isEmpty else { return false }
         guard let floatFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: Double(WhisperKit.sampleRate),
             channels: 1,
             interleaved: false
         ), let buffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: AVAudioFrameCount(newSamples.count)) else {
-            return
+            return false
         }
         buffer.frameLength = AVAudioFrameCount(newSamples.count)
         newSamples.withUnsafeBufferPointer { ptr in
@@ -334,9 +468,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
 
         do {
             try file.write(from: buffer)
-            writtenSampleCount = total
+            return true
         } catch {
             lastError = "Erreur d'écriture audio : \(error.localizedDescription)"
+            return false
         }
     }
 
