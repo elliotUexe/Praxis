@@ -216,15 +216,7 @@ struct SettingsView: View {
             }
             // Apple checks its language asset per locale: a new language may need one.
             .onChange(of: languageRaw) {
-                guard selectedEngine == .apple,
-                      !transcription.isSessionActive, !importCoordinator.isTranscribing,
-                      transcription.isReady || importCoordinator.isReady else { return }
-                Task {
-                    await transcription.unloadModels()
-                    importCoordinator.unloadModel()
-                    await transcription.prepare()
-                    await importCoordinator.prepare()
-                }
+                Task { await transcription.applyLanguageSetting() }
             }
 
             Divider()

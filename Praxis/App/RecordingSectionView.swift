@@ -58,7 +58,12 @@ struct RecordingSectionView: View {
                     if session.recordingState == .idle {
                         Task {
                             guard let outputURL = await session.beginRecordingSession() else { return }
-                            await transcription.start(outputURL: outputURL)
+                            // Nothing is being recorded if this fails: stop the clock rather
+                            // than let it run over an empty session.
+                            guard await transcription.start(outputURL: outputURL) else {
+                                session.stopRecording()
+                                return
+                            }
                             let transcriptProvider: () -> String = { [weak transcription] in
                                 transcription?.display.segments.map(\.text).joined(separator: " ") ?? ""
                             }
@@ -224,7 +229,7 @@ struct RecordingSectionView: View {
                 Button("Décharger") {
                     Task {
                         await transcription.unloadModels()
-                        importCoordinator.unloadModel()
+                        await importCoordinator.unloadModel()
                     }
                 }
                 .font(.system(size: 11))
@@ -244,7 +249,12 @@ struct RecordingSectionView: View {
     private var sttStatusText: String {
         if transcription.isLoadingModel || importCoordinator.isLoadingModel { return "chargement…" }
         if transcription.isReady || importCoordinator.isReady {
-            return transcription.engine == .apple ? "Apple prête" : "en mémoire"
+            // The language is on this line because it is global: set to Anglais for one
+            // course, it silently turned the next French lecture into English (2026-10-05).
+            let language = TranscriptionLanguage.current.displayName.lowercased()
+            return transcription.engine == .apple
+                ? "Apple prête · \(language)"
+                : "Whisper en mémoire · \(language)"
         }
         return "déchargée"
     }

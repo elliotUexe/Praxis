@@ -1,6 +1,12 @@
 import Foundation
 import AVFoundation
+import OSLog
 import WhisperKit
+
+/// Transcription failures used to live only in `lastError`, on screen: a session that
+/// failed to start left no trace anywhere once the window was closed (2026-10-05, an hour
+/// of "recording" with no file and nothing in the system log to say why).
+let transcriptionLog = Logger(subsystem: "com.pierretranchand.Praxis", category: "transcription")
 
 struct DisplaySegment: Identifiable, Equatable {
     var id: Float { start }
@@ -58,7 +64,9 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     @Published private(set) var isReady = false
     @Published private(set) var isRefiningReady = false
     @Published private(set) var isLoadingModel = false
-    @Published var lastError: String?
+    @Published var lastError: String? {
+        didSet { if let lastError { transcriptionLog.error("live: \(lastError, privacy: .public)") } }
+    }
     /// The engine the loaded state belongs to. Read from the setting at `prepare()`, so a
     /// change in Réglages never swaps the recogniser under a running session.
     @Published private(set) var engine: TranscriptionEngine = .current
@@ -70,6 +78,34 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var appleLocale: Locale?
 
     var isSessionActive: Bool { audioStreamTranscriber != nil || appleSession != nil }
+
+    /// Loading, unloading and switching engine, strictly one after the other.
+    ///
+    /// They used to overlap. Switching engine while a load was still running unloaded,
+    /// asked `prepare()` for the new engine — which saw `isLoadingModel` and did nothing —
+    /// and then the old load landed and set `isReady` for an engine no longer selected.
+    /// The start button lit up, `start()` failed before creating any file, and the session
+    /// clock ran for an hour over nothing; the other way round, the spinner never stopped.
+    private var lastOperation: Task<Void, Never>?
+
+    private func serialized(_ operation: @escaping @MainActor () async -> Void) async {
+        let previous = lastOperation
+        let task = Task { @MainActor in
+            await previous?.value
+            await operation()
+        }
+        lastOperation = task
+        await task.value
+    }
+
+    /// Whether `start()` can actually run with what is loaded — for the engine selected,
+    /// not merely "something finished loading".
+    private var isLoadedForEngine: Bool {
+        switch engine {
+        case .apple: return isReady && appleLocale != nil
+        case .whisper: return isReady && whisperKit != nil
+        }
+    }
 
     private var whisperKit: WhisperKit?
     private let refinementCoordinator = RefinementCoordinator()
@@ -96,12 +132,22 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var writtenSampleCount = 0
     /// Kept for `stop()`, which hands it to `AudioCompressor` once the file is closed.
     private var sessionWAVURL: URL?
+    /// For the no-audio warning: a session that writes nothing for its first seconds is
+    /// one whose microphone never delivered, and should say so while it can be fixed.
+    private var sessionStartedAt: Date?
+    private var sessionSampleCount = 0
+    private var warnedSilentInput = false
 
-    func prepare(
+    func prepare() async {
+        await serialized { await self.performPrepare() }
+    }
+
+    private func performPrepare(
         liveModelName: String = "large-v3-v20240930_turbo",
         refineModelName: String = "large-v3-v20240930_626MB"
     ) async {
-        guard !isReady, whisperKit == nil, !isLoadingModel else { return }
+        if isReady, engine == .current, isLoadedForEngine { return }
+        if isReady || whisperKit != nil || appleLocale != nil { await performUnload() }
         engine = .current
         if engine == .apple {
             await prepareApple()
@@ -135,12 +181,26 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// Follows a change of engine in Réglages: frees whatever the old engine held and, if
     /// transcription was loaded, prepares the new one. Never during a session — the
     /// setting is then picked up by the next `prepare()`.
+    ///
+    /// Queued behind any load in flight, so the switch happens once that load has landed.
     func applyEngineSetting() async {
-        guard !isSessionActive, TranscriptionEngine.current != engine else { return }
-        let wasLoaded = isReady || isLoadingModel
-        await unloadModels()
-        engine = .current
-        if wasLoaded { await prepare() }
+        await serialized {
+            guard !self.isSessionActive, TranscriptionEngine.current != self.engine else { return }
+            let wasLoaded = self.isReady
+            await self.performUnload()
+            self.engine = .current
+            if wasLoaded { await self.performPrepare() }
+        }
+    }
+
+    /// Reloads for a new language. Only Apple cares: its assets are per locale, while
+    /// Whisper reads the language at every decode.
+    func applyLanguageSetting() async {
+        await serialized {
+            guard !self.isSessionActive, self.engine == .apple, self.isReady else { return }
+            await self.performUnload()
+            await self.performPrepare()
+        }
     }
 
     private func loadLiveModel(_ name: String) async {
@@ -167,6 +227,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// `prepare()` reloads from the on-disk model cache (no re-download) when needed.
     /// Refuses while a stream is live rather than yanking the model out from under it.
     func unloadModels() async {
+        await serialized { await self.performUnload() }
+    }
+
+    private func performUnload() async {
         guard !isSessionActive else {
             lastError = "Impossible de décharger pendant un enregistrement."
             return
@@ -178,14 +242,24 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         appleLocale = nil
     }
 
-    func start(outputURL: URL) async {
+    /// Returns whether a session really started. The caller must stop its own clock on
+    /// `false`: nothing is being recorded, and pretending otherwise is how an hour of
+    /// lecture was lost.
+    @discardableResult
+    func start(outputURL: URL) async -> Bool {
+        // A load or a switch still in flight finishes first, so the engine checked below
+        // is the one that will actually run.
+        await serialized {}
+        guard isLoadedForEngine else {
+            lastError = "Transcription pas prête (\(engine.displayName)) : enregistrement non démarré. Rechargez via « Charger »."
+            return false
+        }
         if engine == .apple {
-            await startApple(outputURL: outputURL)
-            return
+            return await startApple(outputURL: outputURL)
         }
         guard let whisperKit, let tokenizer = whisperKit.tokenizer else {
-            lastError = "Modèle non chargé."
-            return
+            lastError = "Modèle Whisper non chargé : enregistrement non démarré."
+            return false
         }
         resetSession(outputURL: outputURL)
 
@@ -220,9 +294,13 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         }
 
         restartCheckpointTimer()
+        return true
     }
 
     private func resetSession(outputURL: URL) {
+        sessionStartedAt = Date()
+        sessionSampleCount = 0
+        warnedSilentInput = false
         displaySegments = []
         unconfirmedText = ""
         refinedStarts = []
@@ -238,11 +316,18 @@ final class LiveTranscriptionCoordinator: ObservableObject {
 
     /// Apple's results arrive already final, so they go straight in as refined text:
     /// there is no second pass to wait for, and nothing to dim.
-    private func startApple(outputURL: URL) async {
-        guard #available(macOS 26, *), isReady, let locale = appleLocale else {
-            lastError = "Reconnaissance Apple non prête."
-            return
+    private func startApple(outputURL: URL) async -> Bool {
+        guard #available(macOS 26, *) else { return false }
+        // The language may have changed since `prepare()`: use the one selected now, and
+        // make sure its asset is there (instant when it is, which is the usual case).
+        let locale = await AppleSpeech.locale()
+        do {
+            try await AppleSpeech.ensureAssets(locale: locale)
+        } catch {
+            lastError = "Langue \(locale.identifier) indisponible pour Apple : enregistrement non démarré (\(error.localizedDescription))."
+            return false
         }
+        appleLocale = locale
         resetSession(outputURL: outputURL)
         let session = AppleLiveTranscriber()
         appleSession = session
@@ -254,12 +339,18 @@ final class LiveTranscriptionCoordinator: ObservableObject {
                 onLevel: { [weak self] peak in self?.display.inputPeak = peak }
             )
         } catch {
+            await session.stop()
             appleSession = nil
             wavFile = nil
+            // The empty WAV `resetSession` created would otherwise sit in the course
+            // folder looking like a recording.
+            if let wavURL = sessionWAVURL { try? FileManager.default.removeItem(at: wavURL) }
+            sessionWAVURL = nil
             lastError = "Impossible de démarrer la reconnaissance Apple : \(error.localizedDescription)"
-            return
+            return false
         }
         restartCheckpointTimer()
+        return true
     }
 
     private func ingestApple(_ part: TimedText) {
@@ -353,6 +444,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
                 guard let self else { return }
                 self.appendNewSamplesToWAV()
                 self.writeTranscript()
+                self.checkInputArriving()
             }
         }
     }
@@ -423,6 +515,13 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// the ten seconds added rather than to the whole session. Deliberately kept on the
     /// main actor: once the write is ~640 KB instead of 160 MB it costs about a
     /// millisecond, and staying here avoids racing another writer on the same file handle.
+    private func checkInputArriving() {
+        guard !warnedSilentInput, sessionSampleCount == 0,
+              let sessionStartedAt, Date().timeIntervalSince(sessionStartedAt) >= 15 else { return }
+        warnedSilentInput = true
+        lastError = "Aucun son reçu du micro depuis 15 s : vérifiez l'entrée audio et l'autorisation Micro."
+    }
+
     private func appendNewSamplesToWAV() {
         if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
             writeToWAV(session.drainSamples())
@@ -468,6 +567,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
 
         do {
             try file.write(from: buffer)
+            sessionSampleCount += newSamples.count
             return true
         } catch {
             lastError = "Erreur d'écriture audio : \(error.localizedDescription)"

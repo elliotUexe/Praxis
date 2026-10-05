@@ -48,7 +48,12 @@ struct MenuBarContentView: View {
                     if session.recordingState == .idle {
                         Task {
                             guard let outputURL = await session.beginRecordingSession() else { return }
-                            await transcription.start(outputURL: outputURL)
+                            // Nothing is being recorded if this fails: stop the clock rather
+                            // than let it run over an empty session.
+                            guard await transcription.start(outputURL: outputURL) else {
+                                session.stopRecording()
+                                return
+                            }
                         }
                     } else {
                         session.stopRecording()

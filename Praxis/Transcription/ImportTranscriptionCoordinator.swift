@@ -7,7 +7,9 @@ final class ImportTranscriptionCoordinator: ObservableObject {
     @Published private(set) var isLoadingModel = false
     @Published private(set) var isReady = false
     @Published private(set) var progressText: String = ""
-    @Published var lastError: String?
+    @Published var lastError: String? {
+        didSet { if let lastError { transcriptionLog.error("import: \(lastError, privacy: .public)") } }
+    }
     @Published private(set) var lastOutputURL: URL?
 
     /// Same rule as the live coordinator: the engine is fixed at `prepare()`.
@@ -15,8 +17,27 @@ final class ImportTranscriptionCoordinator: ObservableObject {
 
     private var whisperKit: WhisperKit?
 
-    func prepare(modelName: String = "large-v3-v20240930_626MB") async {
-        guard !isReady, !isLoadingModel else { return }
+    /// Same queue as `LiveTranscriptionCoordinator`, for the same race: a switch of engine
+    /// while the import model was still loading left `isReady` describing the wrong one.
+    private var lastOperation: Task<Void, Never>?
+
+    private func serialized(_ operation: @escaping @MainActor () async -> Void) async {
+        let previous = lastOperation
+        let task = Task { @MainActor in
+            await previous?.value
+            await operation()
+        }
+        lastOperation = task
+        await task.value
+    }
+
+    func prepare() async {
+        await serialized { await self.performPrepare() }
+    }
+
+    private func performPrepare(modelName: String = "large-v3-v20240930_626MB") async {
+        if isReady, engine == .current { return }
+        if isReady { performUnload() }
         engine = .current
         isLoadingModel = true
         defer { isLoadingModel = false }
@@ -40,7 +61,11 @@ final class ImportTranscriptionCoordinator: ObservableObject {
 
     /// Frees the import model. Refuses mid-transcription rather than pulling the model out
     /// from under a running job; `prepare()` reloads from the on-disk cache on demand.
-    func unloadModel() {
+    func unloadModel() async {
+        await serialized { self.performUnload() }
+    }
+
+    private func performUnload() {
         guard !isTranscribing else {
             lastError = "Impossible de décharger pendant une transcription."
             return
@@ -51,14 +76,17 @@ final class ImportTranscriptionCoordinator: ObservableObject {
 
     /// See `LiveTranscriptionCoordinator.applyEngineSetting()`.
     func applyEngineSetting() async {
-        guard !isTranscribing, TranscriptionEngine.current != engine else { return }
-        let wasLoaded = isReady || isLoadingModel
-        unloadModel()
-        engine = .current
-        if wasLoaded { await prepare() }
+        await serialized {
+            guard !self.isTranscribing, TranscriptionEngine.current != self.engine else { return }
+            let wasLoaded = self.isReady
+            self.performUnload()
+            self.engine = .current
+            if wasLoaded { await self.performPrepare() }
+        }
     }
 
     func transcribe(fileURL: URL) async {
+        await serialized {}
         if engine == .apple {
             await transcribeWithApple(fileURL: fileURL)
             return
@@ -110,7 +138,9 @@ final class ImportTranscriptionCoordinator: ObservableObject {
         lastError = nil
         lastOutputURL = nil
         do {
-            let parts = try await AppleSpeech.transcribe(fileURL: fileURL, locale: await AppleSpeech.locale())
+            let locale = await AppleSpeech.locale()
+            try await AppleSpeech.ensureAssets(locale: locale)
+            let parts = try await AppleSpeech.transcribe(fileURL: fileURL, locale: locale)
             let lines = parts.map { OutputFileManager.transcriptLine(start: $0.start, text: $0.text) }
             try write(lines: lines, nextTo: fileURL)
         } catch {
