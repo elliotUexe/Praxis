@@ -11,6 +11,7 @@ struct RecordingSectionView: View {
     @EnvironmentObject private var aiSummary: AISummaryCoordinator
     @EnvironmentObject private var taskStore: TaskStoreCoordinator
 
+    @AppStorage(TranscriptionLanguage.storageKey) private var languageRaw = TranscriptionLanguage.auto.rawValue
     @State private var isFileImporterPresented = false
     @State private var isDropTargeted = false
     @State private var selectedTab: RecordingTab = .transcription
@@ -38,6 +39,7 @@ struct RecordingSectionView: View {
             }
 
             courseDestinationRow
+            languageRow
             sttModelsRow
 
             if let currentURL = session.currentRecordingURL {
@@ -188,6 +190,38 @@ struct RecordingSectionView: View {
     /// Cascade Année → Pôle → Cours, plus une sortie "Autre dossier…" pour enregistrer
     /// complètement ailleurs, hors du mapping de cours (tous les enregistrements ne sont
     /// pas un cours d'une UE connue).
+    /// The language is global, not per course: left on Anglais after an English class,
+    /// it turned the next French lectures into English with both engines (2026-10-05).
+    /// Shown — and changeable — right where a recording starts, in the accent colour
+    /// when it is not French so it reads as a deliberate exception.
+    private var languageRow: some View {
+        let language = TranscriptionLanguage(rawValue: languageRaw) ?? .auto
+        let isRecording = session.recordingState != .idle
+        return HStack(spacing: 4) {
+            Image(systemName: "globe")
+                .foregroundStyle(language == .french ? Color.secondary : Color.praxisAccent)
+            Text("Langue : \(language.displayName)")
+                .font(.caption)
+                .fontWeight(language == .french ? .regular : .semibold)
+                .foregroundStyle(language == .french ? Color.secondary : Color.praxisAccent)
+            Menu("Changer") {
+                ForEach(TranscriptionLanguage.allCases) { option in
+                    Button(option.displayName) { languageRaw = option.rawValue }
+                }
+            }
+            .font(.caption)
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            // Both engines read the language when a session starts: a change mid-lecture
+            // would only apply to the next one, so it is not offered.
+            .disabled(isRecording)
+        }
+        .help(isRecording ? "S'appliquera au prochain enregistrement." : "Langue utilisée par la transcription.")
+        .onChange(of: languageRaw) {
+            Task { await transcription.applyLanguageSetting() }
+        }
+    }
+
     private var courseDestinationRow: some View {
         HStack(spacing: 4) {
             Image(systemName: "book.closed")
@@ -249,12 +283,7 @@ struct RecordingSectionView: View {
     private var sttStatusText: String {
         if transcription.isLoadingModel || importCoordinator.isLoadingModel { return "chargement…" }
         if transcription.isReady || importCoordinator.isReady {
-            // The language is on this line because it is global: set to Anglais for one
-            // course, it silently turned the next French lecture into English (2026-10-05).
-            let language = TranscriptionLanguage.current.displayName.lowercased()
-            return transcription.engine == .apple
-                ? "Apple prête · \(language)"
-                : "Whisper en mémoire · \(language)"
+            return transcription.engine == .apple ? "Apple prête" : "Whisper en mémoire"
         }
         return "déchargée"
     }
