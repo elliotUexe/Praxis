@@ -23,24 +23,46 @@ struct RecordingSectionView: View {
         case resume = "Résumé"
     }
 
+    /// During a lecture the screen has one job — clock, level, transcript — and must fit
+    /// the window. With the language row added in 0.4.7.1 it no longer did: SwiftUI then
+    /// grew the whole split view past the window, clipping the title at the top and the
+    /// sidebar's status footer at the bottom. What only matters between sessions (the
+    /// decorative header, model loading, import) steps aside while one runs.
+    private var isInSession: Bool {
+        session.recordingState == .recording || session.recordingState == .paused
+    }
+
     var body: some View {
         VStack(spacing: 12) {
-            Image(systemName: "waveform")
-                .font(.system(size: 32))
-            Text("Praxis")
-                .font(.title2)
+            if !isInSession {
+                Image(systemName: "waveform")
+                    .font(.system(size: 32))
+                Text("Praxis")
+                    .font(.title2)
+            }
             Text(stateLabel)
                 .foregroundStyle(.secondary)
 
-            if session.recordingState == .recording || session.recordingState == .paused {
+            if isInSession {
                 chronoView
                 InputLevelMeter(display: transcription.display)
                     .frame(maxWidth: 260)
             }
 
-            courseDestinationRow
-            languageRow
-            sttModelsRow
+            // One line when the window is wide enough, two otherwise.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    courseDestinationRow
+                    languageRow
+                }
+                VStack(spacing: 6) {
+                    courseDestinationRow
+                    languageRow
+                }
+            }
+            if !isInSession {
+                sttModelsRow
+            }
 
             if let currentURL = session.currentRecordingURL {
                 Text(currentURL.lastPathComponent)
@@ -86,7 +108,7 @@ struct RecordingSectionView: View {
                         aiSummary.stopSession()
                     }
                 }
-                .disabled(!transcription.isReady && session.recordingState == .idle)
+                .disabled((!transcription.isReady && session.recordingState == .idle) || transcription.isStarting)
 
                 Button(session.recordingState == .paused ? "Reprendre" : "Pause") {
                     if session.recordingState == .paused {
@@ -97,11 +119,13 @@ struct RecordingSectionView: View {
                         transcription.pause()
                     }
                 }
-                .disabled(session.recordingState == .idle)
+                .disabled(session.recordingState == .idle || transcription.isStarting)
             }
 
             if transcription.isLoadingModel {
-                ProgressView("Chargement des modèles (rapide + raffinement)…")
+                ProgressView(transcription.engine == .apple
+                             ? "Préparation de la reconnaissance Apple…"
+                             : "Chargement des modèles Whisper (rapide + raffinement)…")
                     .font(.caption)
             }
 
@@ -131,6 +155,25 @@ struct RecordingSectionView: View {
                 SummariesSectionView()
             }
 
+            if !isInSession {
+                importSection
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .fileImporter(
+            isPresented: $isFileImporterPresented,
+            allowedContentTypes: [.audio, .mpeg4Audio, .wav],
+            allowsMultipleSelection: false
+        ) { result in
+            if case .success(let urls) = result, let url = urls.first {
+                Task { await importCoordinator.transcribe(fileURL: url) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var importSection: some View {
             Divider()
 
             VStack(spacing: 6) {
@@ -162,18 +205,6 @@ struct RecordingSectionView: View {
             .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
                 handleDrop(providers: providers)
             }
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .fileImporter(
-            isPresented: $isFileImporterPresented,
-            allowedContentTypes: [.audio, .mpeg4Audio, .wav],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                Task { await importCoordinator.transcribe(fileURL: url) }
-            }
-        }
     }
 
 
@@ -187,9 +218,6 @@ struct RecordingSectionView: View {
         return "Aucun cours détecté"
     }
 
-    /// Cascade Année → Pôle → Cours, plus une sortie "Autre dossier…" pour enregistrer
-    /// complètement ailleurs, hors du mapping de cours (tous les enregistrements ne sont
-    /// pas un cours d'une UE connue).
     /// The language is global, not per course: left on Anglais after an English class,
     /// it turned the next French lectures into English with both engines (2026-10-05).
     /// Shown — and changeable — right where a recording starts, in the accent colour
@@ -222,6 +250,9 @@ struct RecordingSectionView: View {
         }
     }
 
+    /// Cascade Année → Pôle → Cours, plus une sortie "Autre dossier…" pour enregistrer
+    /// complètement ailleurs, hors du mapping de cours (tous les enregistrements ne sont
+    /// pas un cours d'une UE connue).
     private var courseDestinationRow: some View {
         HStack(spacing: 4) {
             Image(systemName: "book.closed")

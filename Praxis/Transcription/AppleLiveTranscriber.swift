@@ -25,8 +25,14 @@ final class AppleLiveTranscriber: @unchecked Sendable {
 
     private let engine = AVAudioEngine()
     private var analyzer: SpeechAnalyzer?
+    /// Read on the audio thread, finished on the main actor: guarded by `lock`.
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Error>?
+    /// What the analyser was prepared for; converters are rebuilt towards it whenever the
+    /// input device changes underneath the session.
+    private var analyzerFormat: AVAudioFormat?
+    private var configurationObserver: NSObjectProtocol?
+    private var isPaused = false
 
     /// Touched only from the tap's audio thread once capture has started.
     private var toAnalyzer: AVAudioConverter?
@@ -49,16 +55,46 @@ final class AppleLiveTranscriber: @unchecked Sendable {
         onFinal: @escaping @MainActor (TimedText) -> Void,
         onLevel: @escaping @MainActor (Float) -> Void
     ) async throws {
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         try await startAnalysis(locale: locale, inputFormat: inputFormat, onVolatile: onVolatile, onFinal: onFinal)
         self.onLevel = onLevel
 
+        installTap()
+        engine.prepare()
+        try engine.start()
+
+        // AirPods plugged in, the default input switched, the Mac waking from sleep: the
+        // engine stops itself and the tap goes quiet, while the session clock runs on.
+        // Rebinding to whatever the input now is keeps the recording going.
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
+        ) { [weak self] _ in
+            self?.rebindInput()
+        }
+    }
+
+    /// (Re)attaches the tap in the input's current format, with converters to match. The
+    /// tap is removed first, so the converters are never swapped while it is using them.
+    private func installTap() {
+        let input = engine.inputNode
+        input.removeTap(onBus: 0)
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0 else { return }
+        if let analyzerFormat {
+            toAnalyzer = AVAudioConverter(from: inputFormat, to: analyzerFormat)
+        }
+        toRecording = AVAudioConverter(from: inputFormat, to: Self.recordingFormat)
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             self?.process(buffer)
         }
+    }
+
+    private func rebindInput() {
+        guard !isPaused, inputContinuation != nil else { return }
+        engine.stop()
+        installTap()
         engine.prepare()
-        try engine.start()
+        try? engine.start()
     }
 
     /// Everything but the microphone, so the same path can be driven from a file in a test.
@@ -78,11 +114,12 @@ final class AppleLiveTranscriber: @unchecked Sendable {
               ) else {
             throw StartError(errorDescription: "Aucune entrée audio utilisable.")
         }
+        self.analyzerFormat = analyzerFormat
         toAnalyzer = AVAudioConverter(from: inputFormat, to: analyzerFormat)
         toRecording = AVAudioConverter(from: inputFormat, to: Self.recordingFormat)
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
-        inputContinuation = continuation
+        lock.withLock { inputContinuation = continuation }
 
         // Awaiting each handler on the main actor, rather than firing a Task per result,
         // is what lets `stop()` know the last final text has landed once this loop ends.
@@ -106,7 +143,8 @@ final class AppleLiveTranscriber: @unchecked Sendable {
     /// and its peak to the level meter. Runs on the audio thread.
     func process(_ buffer: AVAudioPCMBuffer) {
         if let converted = toAnalyzer.flatMap({ Self.convert(buffer, using: $0) }) {
-            inputContinuation?.yield(AnalyzerInput(buffer: converted))
+            let input = AnalyzerInput(buffer: converted)
+            lock.withLock { _ = inputContinuation?.yield(input) }
         }
         if let recorded = toRecording.flatMap({ Self.convert(buffer, using: $0) }),
            let channel = recorded.floatChannelData?[0] {
@@ -127,28 +165,74 @@ final class AppleLiveTranscriber: @unchecked Sendable {
         }
     }
 
+    /// Puts back samples the coordinator failed to write, ahead of anything newer, so a
+    /// transient disk error does not shift the WAV against the analyser's timeline.
+    func requeue(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        lock.withLock { pendingSamples.insert(contentsOf: samples, at: 0) }
+    }
+
     func pause() {
+        isPaused = true
         engine.pause()
     }
 
+    /// Rebinds before restarting: the input may have changed while paused (a pause is
+    /// exactly when someone plugs in headphones), and a tap in the old format would throw.
     func resume() throws {
+        isPaused = false
+        engine.stop()
+        installTap()
+        engine.prepare()
         try engine.start()
     }
 
-    /// Stops the microphone first, so nothing arrives after the last WAV write, then lets
-    /// the analyser finish the sentence it was in the middle of. Returns once every final
-    /// result has been delivered.
-    func stop() async {
-        if engine.isRunning {
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+    /// The microphone, and nothing else: once this returns no sample will be added, so
+    /// the recording can be closed and compressed without waiting for the analyser.
+    func stopCapture() {
+        if let configurationObserver {
+            NotificationCenter.default.removeObserver(configurationObserver)
+            self.configurationObserver = nil
         }
-        inputContinuation?.finish()
-        inputContinuation = nil
-        try? await analyzer?.finalizeAndFinishThroughEndOfInput()
-        _ = try? await resultsTask?.value
+        engine.stop()
+        engine.inputNode.removeTap(onBus: 0)
+        lock.withLock {
+            inputContinuation?.finish()
+            inputContinuation = nil
+        }
+    }
+
+    /// Lets the analyser finish the sentence it was in, delivering its last final
+    /// results. Bounded: an analyser that never returns must not hold the session open —
+    /// whatever it had not finalised by then is given up, the audio is already safe.
+    func finishAnalysis(timeout: Duration = .seconds(30)) async {
+        guard let analyzer else { return }
+        let results = resultsTask
+        // First of "finished" or "timed out" wins. A task group would not do: it waits for
+        // every child before returning, so a stuck analyser would still hold `stop()`.
+        let gate = FirstOnly()
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Task {
+                try? await analyzer.finalizeAndFinishThroughEndOfInput()
+                _ = try? await results?.value
+                if gate.claim() { continuation.resume() }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                if gate.claim() {
+                    await analyzer.cancelAndFinishNow()
+                    results?.cancel()
+                    continuation.resume()
+                }
+            }
+        }
         resultsTask = nil
-        analyzer = nil
+        self.analyzer = nil
+    }
+
+    func stop() async {
+        stopCapture()
+        await finishAnalysis()
     }
 
     /// Sample-rate converters keep state between calls, which is what keeps a stream of
@@ -181,5 +265,19 @@ final class AppleLiveTranscriber: @unchecked Sendable {
             peak = max(peak, abs(channel[i]))
         }
         return min(peak, 1)
+    }
+}
+
+/// Lets exactly one of several racing tasks act.
+private final class FirstOnly: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            if claimed { return false }
+            claimed = true
+            return true
+        }
     }
 }

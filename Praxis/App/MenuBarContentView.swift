@@ -62,7 +62,7 @@ struct MenuBarContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.praxisAccent)
-                .disabled(!transcription.isReady && session.recordingState == .idle)
+                .disabled((!transcription.isReady && session.recordingState == .idle) || transcription.isStarting)
 
                 Button(session.recordingState == .paused ? "Reprendre" : "Pause") {
                     if session.recordingState == .paused {
@@ -74,7 +74,7 @@ struct MenuBarContentView: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(session.recordingState == .idle)
+                .disabled(session.recordingState == .idle || transcription.isStarting)
             }
 
             Divider()

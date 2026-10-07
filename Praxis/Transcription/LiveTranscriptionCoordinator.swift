@@ -77,7 +77,18 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// The locale Apple's assets were checked for, reused by `start()`.
     private var appleLocale: Locale?
 
-    var isSessionActive: Bool { audioStreamTranscriber != nil || appleSession != nil }
+    /// True from the moment `start()` is called until it returns. `start()` can take a
+    /// while (an Apple language asset to fetch, a Whisper load to finish), and during that
+    /// window Arrêter found nothing to stop, Pause did nothing, and an engine switch could
+    /// slip in — then the session started anyway, behind an interface that thought it idle.
+    @Published private(set) var isStarting = false
+
+    var isSessionActive: Bool { isStarting || audioStreamTranscriber != nil || appleSession != nil }
+
+    /// Changes with every session. A refinement queued in one session and landing after
+    /// the next has started must not rewrite the new transcript — both usually have a
+    /// segment starting at 0.0.
+    private var sessionID = UUID()
 
     /// Loading, unloading and switching engine, strictly one after the other.
     ///
@@ -137,6 +148,10 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     private var sessionStartedAt: Date?
     private var sessionSampleCount = 0
     private var warnedSilentInput = false
+    /// For the same warning mid-session: the microphone can also go quiet halfway through
+    /// (device switched, Mac asleep) while the clock runs on.
+    private var lastCheckedSampleCount = 0
+    private var lastAudioProgressAt: Date?
 
     func prepare() async {
         await serialized { await self.performPrepare() }
@@ -247,9 +262,18 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// lecture was lost.
     @discardableResult
     func start(outputURL: URL) async -> Bool {
+        guard !isSessionActive else {
+            lastError = "Un enregistrement est déjà en cours."
+            return false
+        }
+        isStarting = true
+        defer { isStarting = false }
         // A load or a switch still in flight finishes first, so the engine checked below
-        // is the one that will actually run.
-        await serialized {}
+        // is the one that will actually run. Not when what is loaded already matches:
+        // waiting then would hold a Whisper start behind the refinement model's load.
+        if !(isLoadedForEngine && engine == .current) {
+            await serialized {}
+        }
         guard isLoadedForEngine else {
             lastError = "Transcription pas prête (\(engine.displayName)) : enregistrement non démarré. Rechargez via « Charger »."
             return false
@@ -261,7 +285,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             lastError = "Modèle Whisper non chargé : enregistrement non démarré."
             return false
         }
-        resetSession(outputURL: outputURL)
+        guard resetSession(outputURL: outputURL) else { return false }
 
         let decodingOptions = TranscriptionDefaults.decodingOptions()
 
@@ -294,12 +318,18 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         }
 
         restartCheckpointTimer()
+        transcriptionLog.info("session start: whisper \(TranscriptionLanguage.current.rawValue, privacy: .public) → \(outputURL.lastPathComponent, privacy: .public)")
         return true
     }
 
-    private func resetSession(outputURL: URL) {
+    /// False when the WAV cannot be created: recording into nothing is exactly the
+    /// failure this whole path exists to refuse.
+    private func resetSession(outputURL: URL) -> Bool {
+        sessionID = UUID()
         sessionStartedAt = Date()
         sessionSampleCount = 0
+        lastCheckedSampleCount = 0
+        lastAudioProgressAt = Date()
         warnedSilentInput = false
         displaySegments = []
         unconfirmedText = ""
@@ -312,6 +342,11 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             baseName: outputURL.deletingPathExtension().lastPathComponent
         )
         openWAVFile(at: outputURL)
+        if wavFile == nil {
+            lastError = "Impossible de créer le fichier audio dans \(outputURL.deletingLastPathComponent().lastPathComponent) : enregistrement non démarré."
+            return false
+        }
+        return true
     }
 
     /// Apple's results arrive already final, so they go straight in as refined text:
@@ -328,7 +363,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             return false
         }
         appleLocale = locale
-        resetSession(outputURL: outputURL)
+        guard resetSession(outputURL: outputURL) else { return false }
         let session = AppleLiveTranscriber()
         appleSession = session
         do {
@@ -350,6 +385,7 @@ final class LiveTranscriptionCoordinator: ObservableObject {
             return false
         }
         restartCheckpointTimer()
+        transcriptionLog.info("session start: apple \(locale.identifier, privacy: .public) → \(outputURL.lastPathComponent, privacy: .public)")
         return true
     }
 
@@ -387,22 +423,28 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// The microphone stops before the last WAV write, so the file ends where capture did;
     /// the analyser then finishes the sentence in flight, and the transcript is written
     /// once more with it.
+    ///
+    /// The audio is closed and handed to compression *before* waiting for the analyser:
+    /// the recording must never depend on the recogniser finishing.
     @available(macOS 26, *)
     private func stopApple(_ session: AppleLiveTranscriber) async {
         checkpointTimer?.invalidate()
         checkpointTimer = nil
-        await session.stop()
+        session.stopCapture()
         appendNewSamplesToWAV()
-        appleSession = nil
         wavFile = nil
         writtenSampleCount = 0
-        unconfirmedText = ""
-        writeTranscript()
-
         if let wavURL = sessionWAVURL {
             sessionWAVURL = nil
             compressRecording(at: wavURL)
         }
+        writeTranscript()
+
+        await session.finishAnalysis()
+        appleSession = nil
+        unconfirmedText = ""
+        writeTranscript()
+        transcriptionLog.info("session stop: apple, \(self.sessionSampleCount / 16_000, privacy: .public) s audio, \(self.displaySegments.count, privacy: .public) segments")
     }
 
     /// `AudioStreamTranscriber` has no pause concept of its own — its polling loop just
@@ -419,6 +461,8 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     }
 
     func resume() {
+        // A pause is not silence from a dead microphone.
+        lastAudioProgressAt = Date()
         if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
             do {
                 try session.resume()
@@ -515,16 +559,35 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// the ten seconds added rather than to the whole session. Deliberately kept on the
     /// main actor: once the write is ~640 KB instead of 160 MB it costs about a
     /// millisecond, and staying here avoids racing another writer on the same file handle.
+    /// Runs at each checkpoint, which only ticks while recording (not paused).
     private func checkInputArriving() {
-        guard !warnedSilentInput, sessionSampleCount == 0,
-              let sessionStartedAt, Date().timeIntervalSince(sessionStartedAt) >= 15 else { return }
+        let now = Date()
+        if sessionSampleCount > lastCheckedSampleCount {
+            lastCheckedSampleCount = sessionSampleCount
+            lastAudioProgressAt = now
+            if warnedSilentInput {
+                warnedSilentInput = false
+                lastError = nil
+            }
+            return
+        }
+        guard !warnedSilentInput, let since = lastAudioProgressAt,
+              now.timeIntervalSince(since) >= 15 else { return }
         warnedSilentInput = true
-        lastError = "Aucun son reçu du micro depuis 15 s : vérifiez l'entrée audio et l'autorisation Micro."
+        lastError = sessionSampleCount == 0
+            ? "Aucun son reçu du micro depuis 15 s : vérifiez l'entrée audio et l'autorisation Micro."
+            : "Le micro ne transmet plus rien depuis 15 s : l'enregistrement est interrompu. Vérifiez l'entrée audio."
     }
 
     private func appendNewSamplesToWAV() {
         if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
-            writeToWAV(session.drainSamples())
+            let samples = session.drainSamples()
+            // Put back what a transient write error refused, so the file and the
+            // analyser's timeline stay aligned. Not when there is no file at all: they
+            // would only pile up in memory.
+            if !writeToWAV(samples), wavFile != nil {
+                session.requeue(samples)
+            }
             return
         }
         guard let whisperKit, let file = wavFile else { return }
@@ -623,12 +686,14 @@ final class LiveTranscriptionCoordinator: ObservableObject {
         refinedStarts.insert(segment.start)
 
         guard let samples = extractSamples(start: segment.start, end: segment.end) else { return }
+        let session = sessionID
 
         Task {
             guard let refinedText = try? await refinementCoordinator.refine(samples: samples),
                   !refinedText.isEmpty else { return }
             await MainActor.run {
-                guard let idx = self.displaySegments.firstIndex(where: { $0.start == segment.start }) else { return }
+                guard self.sessionID == session,
+                      let idx = self.displaySegments.firstIndex(where: { $0.start == segment.start }) else { return }
                 self.displaySegments[idx].text = refinedText
                 self.displaySegments[idx].isRefined = true
                 // The rewrite just moved the ground under any flag on this segment.

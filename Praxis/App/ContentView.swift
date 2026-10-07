@@ -110,8 +110,16 @@ struct ContentView: View {
                     }
                     .tag(section)
                 }
-                Divider()
-                sidebarStatusRow
+                // Attached to the list rather than stacked under it: on macOS 26+ the
+                // sidebar is an inset panel, and a footer laid out below the list sat
+                // partly under the window's bottom edge whenever the detail column ran
+                // taller than the window.
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    VStack(spacing: 0) {
+                        Divider()
+                        sidebarStatusRow
+                    }
+                }
             }
             .navigationTitle("Praxis")
         } detail: {
