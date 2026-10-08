@@ -85,6 +85,12 @@ final class LiveTranscriptionCoordinator: ObservableObject {
 
     var isSessionActive: Bool { isStarting || audioStreamTranscriber != nil || appleSession != nil }
 
+    /// The stop in progress, if any. An Apple stop closes the audio at once but then
+    /// lets the analyser finish (bounded at 30 s); the interface is idle by then, so a
+    /// Démarrer clicked meanwhile must wait for it rather than be refused as "already
+    /// recording" — which also stopped the new session's clock straight away.
+    private var stopTask: Task<Void, Never>?
+
     /// Changes with every session. A refinement queued in one session and landing after
     /// the next has started must not rewrite the new transcript — both usually have a
     /// segment starting at 0.0.
@@ -262,12 +268,17 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     /// lecture was lost.
     @discardableResult
     func start(outputURL: URL) async -> Bool {
-        guard !isSessionActive else {
-            lastError = "Un enregistrement est déjà en cours."
+        guard !isStarting else {
+            lastError = "Un enregistrement est déjà en train de démarrer."
             return false
         }
         isStarting = true
         defer { isStarting = false }
+        if let stopTask { await stopTask.value }
+        guard audioStreamTranscriber == nil, appleSession == nil else {
+            lastError = "Un enregistrement est déjà en cours."
+            return false
+        }
         // A load or a switch still in flight finishes first, so the engine checked below
         // is the one that will actually run. Not when what is loaded already matches:
         // waiting then would hold a Whisper start behind the refinement model's load.
@@ -396,6 +407,13 @@ final class LiveTranscriptionCoordinator: ObservableObject {
     }
 
     func stop() async {
+        let task = Task { await self.performStop() }
+        stopTask = task
+        await task.value
+        if stopTask == task { stopTask = nil }
+    }
+
+    private func performStop() async {
         if #available(macOS 26, *), let session = appleSession as? AppleLiveTranscriber {
             await stopApple(session)
             return
