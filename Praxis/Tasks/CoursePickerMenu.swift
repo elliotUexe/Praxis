@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// One node of the folder tree the picker walks.
-struct CourseFolderNode: Identifiable {
+struct CourseFolderNode: Identifiable, Equatable {
     let url: URL
     let name: String
     let relativePath: String

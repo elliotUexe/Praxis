@@ -23,8 +23,10 @@ final class AppSessionStore: ObservableObject {
     /// Set when Pierre picks "Autre dossier…" instead of a resolved course — mutually
     /// exclusive with `destinationCourseVaultPath` (setting one clears the other).
     @Published private(set) var customDestinationFolder: URL?
-    /// Folder tree behind the destination cascade, rebuilt when the vault settings change.
+    /// Folder tree behind the destination cascade, rebuilt when the vault settings change
+    /// and whenever Praxis comes back to the foreground.
     @Published private(set) var courseTree: [CourseFolderNode] = []
+    private var activationObserver: NSObjectProtocol?
 
     private var timer: Timer?
     /// Start of the *current* running stretch, nil while paused. The chrono is not plain
@@ -45,6 +47,16 @@ final class AppSessionStore: ObservableObject {
 
     init() {
         reloadCourses()
+        // A course folder is created in Finder or Obsidian, never in Praxis, so the app is
+        // always in the background at that moment. Re-reading on activation is what makes
+        // it show up without a relaunch: until 0.4.7.2 the tree was only built at launch.
+        activationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadCourses() }
+        }
         if let remembered = UserDefaults.standard.string(forKey: Self.lastCourseKey),
            FileManager.default.fileExists(atPath: VaultSettings.url(forRelativePath: remembered).path) {
             overrideDestination(toCourseVaultPath: remembered)
@@ -88,7 +100,9 @@ final class AppSessionStore: ObservableObject {
     /// Re-reads the vault. Called at launch and whenever the root or the course depth
     /// changes in Réglages, so the cascade never shows a tree that no longer exists.
     func reloadCourses() {
-        courseTree = CourseFolderTree.build()
+        let tree = CourseFolderTree.build()
+        // Activation fires on every app switch; an unchanged tree is not worth a redraw.
+        if tree != courseTree { courseTree = tree }
     }
 
     func pauseRecording() {
