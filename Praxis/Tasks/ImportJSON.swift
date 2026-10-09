@@ -23,6 +23,9 @@ struct PendingTaskCreation: Decodable {
     let blockedReason: String?
     let waitingOn: String?
     let horizonDate: String?
+    /// "low" | "normal" | "high". Optional, and an unknown value is ignored rather than
+    /// failing the whole batch.
+    let priority: String?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -33,6 +36,7 @@ struct PendingTaskCreation: Decodable {
 
     func apply(to task: PraxisTask) {
         task.estimatedDurationMinutes = estimatedDurationMinutes
+        if let priority = priority.flatMap(TaskPriority.init(rawValue:)) { task.priority = priority }
         task.blockedReason = blockedReason
         task.waitingOn = waitingOn
         // Both JSON keys land in `dueDate`: since 0.4 that is the only date a task has, and
@@ -63,6 +67,9 @@ struct PendingFieldChanges: Decodable {
     let blockedReason: String?
     let waitingOn: String?
     let horizonDate: String?
+    /// "low" | "normal" | "high". Optional, and an unknown value is ignored rather than
+    /// failing the whole batch.
+    let priority: String?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -76,6 +83,7 @@ struct PendingFieldChanges: Decodable {
     func apply(to task: PraxisTask) {
         if let title { task.title = title }
         if let estimatedDurationMinutes { task.estimatedDurationMinutes = estimatedDurationMinutes }
+        if let priority = priority.flatMap(TaskPriority.init(rawValue:)) { task.priority = priority }
         if let blockedReason { task.blockedReason = blockedReason }
         if let waitingOn { task.waitingOn = waitingOn }
         // Same single destination as a creation; see `ImportedTaskJSON.apply(to:)`.

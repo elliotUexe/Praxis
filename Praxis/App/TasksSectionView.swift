@@ -252,7 +252,8 @@ struct TasksSectionView: View {
         taskStore.save()
     }
 
-    /// Open tasks bucketed by when they are due, sorted soonest first inside each bucket.
+    /// Open tasks bucketed by when they are due, sorted soonest first inside each bucket,
+    /// higher priority first among tasks due the same day.
     ///
     /// The list used to be cut up by `TaskType` and ordered by creation date, which meant a
     /// rendu due tomorrow sat below one due in March purely because it was typed in later.
@@ -262,12 +263,10 @@ struct TasksSectionView: View {
         let open = visibleTasks.filter { !$0.isDone }
         return Dictionary(grouping: open, by: \.horizon).mapValues { tasks in
             tasks.sorted { left, right in
-                switch (left.effectiveDueDate, right.effectiveDueDate) {
-                case let (l?, r?) where l != r: return l < r
-                // Undated tasks have nothing to rank them by, so the most recently written
-                // down comes first — it is the one still fresh in mind.
-                default: return left.createdAt > right.createdAt
-                }
+                TaskScheduling.precedes(
+                    leftDate: left.effectiveDueDate, leftPriority: left.priority, leftCreatedAt: left.createdAt,
+                    rightDate: right.effectiveDueDate, rightPriority: right.priority, rightCreatedAt: right.createdAt
+                )
             }
         }
     }

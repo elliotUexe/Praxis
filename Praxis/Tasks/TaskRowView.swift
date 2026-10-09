@@ -44,6 +44,7 @@ struct TaskRowView: View {
                         .font(.caption)
                         .foregroundStyle(task.isDone ? AnyShapeStyle(.tertiary) : AnyShapeStyle(task.type.color))
                         .help(task.type.displayName)
+                    priorityMarker
                     Text(task.title)
                         .strikethrough(task.isDone)
                         .foregroundStyle(task.isDone ? .secondary : .primary)
@@ -67,6 +68,15 @@ struct TaskRowView: View {
 
             Spacer(minLength: 8)
 
+            if !task.isDone, let minutes = task.remainingMinutes, minutes > 0 {
+                Text(TaskScheduling.durationLabel(minutes: minutes))
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .fixedSize()
+                    .help(task.subtasks.isEmpty ? "Durée estimée" : "Temps restant sur les sous-tâches")
+            }
+
             if let courseName = task.course?.displayName {
                 Text(courseName)
                     .font(.caption2)
@@ -86,6 +96,26 @@ struct TaskRowView: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture(perform: onTap)
+    }
+
+    /// Only the two ends of the scale get a mark. A glyph on every row would make "normal"
+    /// look like a decision someone took, when it is just the default.
+    @ViewBuilder
+    private var priorityMarker: some View {
+        switch task.priority {
+        case .high:
+            Image(systemName: "arrow.up")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(task.isDone ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.orange))
+                .help("Priorité haute")
+        case .low:
+            Image(systemName: "arrow.down")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .help("Priorité basse")
+        case .normal:
+            EmptyView()
+        }
     }
 
     /// Fixed width whether or not there is a date, so the titles beside it stay aligned and

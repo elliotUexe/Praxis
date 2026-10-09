@@ -33,6 +33,33 @@ enum TaskType: String, Codable, CaseIterable {
     }
 }
 
+/// How much a task matters when there is not enough time for all of them. Not a second
+/// urgency axis — the date already says what presses. This is what to protect and what to
+/// drop first: a planner (Claude over MCP, mostly) reads it to know where to cut.
+///
+/// Stored as a raw string like `TaskType`, so an unknown value from a newer build reads as
+/// `.normal` instead of failing the fetch.
+enum TaskPriority: String, Codable, CaseIterable {
+    case low, normal, high
+
+    var displayName: String {
+        switch self {
+        case .low: return "Basse"
+        case .normal: return "Normale"
+        case .high: return "Haute"
+        }
+    }
+
+    /// Higher first. Used to break ties between tasks due the same day.
+    var rank: Int {
+        switch self {
+        case .low: return 0
+        case .normal: return 1
+        case .high: return 2
+        }
+    }
+}
+
 @Model
 final class Course {
     /// Frozen at whatever it was when the row was created — a path relative to the vault
@@ -106,8 +133,14 @@ final class PraxisTask {
     /// the date is *rendered*, not whether it may exist.
     var dueDate: Date?
 
-    // Révision (fond ou DS)
+    /// The task's own time estimate, for every type since 0.4.8 (it used to belong to the
+    /// two révision types only). Once the task has subtasks it stops counting: each subtask
+    /// carries its own estimate, and `remainingMinutes` adds those up instead. The value is
+    /// kept rather than erased, so deleting every subtask gives the old estimate back.
     var estimatedDurationMinutes: Int?
+    /// See `TaskPriority`. Inline default so SwiftData lightweight-migrates existing rows to
+    /// `normal`; an older build simply ignores the column, which keeps rollback safe.
+    var priorityRaw: String = TaskPriority.normal.rawValue
     @Relationship(deleteRule: .cascade, inverse: \RevisionBlock.task)
     var scheduledBlocks: [RevisionBlock] = []
 
@@ -132,6 +165,20 @@ final class PraxisTask {
     var type: TaskType {
         get { TaskType(rawValue: typeRaw) ?? .anticipation }
         set { typeRaw = newValue.rawValue }
+    }
+
+    var priority: TaskPriority {
+        get { TaskPriority(rawValue: priorityRaw) ?? .normal }
+        set { priorityRaw = newValue.rawValue }
+    }
+
+    /// Work left, in minutes: the open subtasks' estimates when the task is broken down,
+    /// its own estimate otherwise. See `TaskScheduling.remainingMinutes`.
+    var remainingMinutes: Int? {
+        TaskScheduling.remainingMinutes(
+            ownEstimate: estimatedDurationMinutes,
+            subtaskEstimates: subtasks.map { (minutes: $0.estimatedMinutes, isDone: $0.isDone) }
+        )
     }
 
     /// Dates of the milestones still to be done. A finished subtask stops steering the
@@ -243,6 +290,15 @@ final class Subtask {
     var order: Int
     var origin: String
     var parentTask: PraxisTask?
+    /// Same scale as the task's, read relative to it: inside a task that has to be done,
+    /// a low subtask is the step that can be skimmed or skipped. Inline default for the
+    /// lightweight migration, like `dueDate`.
+    var priorityRaw: String = TaskPriority.normal.rawValue
+
+    var priority: TaskPriority {
+        get { TaskPriority(rawValue: priorityRaw) ?? .normal }
+        set { priorityRaw = newValue.rawValue }
+    }
 
     init(
         title: String,

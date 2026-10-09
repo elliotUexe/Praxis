@@ -115,4 +115,47 @@ enum TaskScheduling {
     static func date(offsetByDays days: Int, from now: Date = Date()) -> Date {
         Calendar.current.date(byAdding: .day, value: days, to: now) ?? now
     }
+
+    /// What a task still costs, in minutes, or nil when nobody has estimated it.
+    ///
+    /// A task with subtasks is measured by them alone: each subtask has its own estimate,
+    /// so the task's own figure would count the same work twice. Only the unfinished ones
+    /// are added up, which is what a planner needs. A task whose subtasks are all done has
+    /// nothing left (0), not "unknown".
+    static func remainingMinutes(ownEstimate: Int?, subtaskEstimates: [(minutes: Int, isDone: Bool)]) -> Int? {
+        guard !subtaskEstimates.isEmpty else { return ownEstimate }
+        return subtaskEstimates.filter { !$0.isDone }.map(\.minutes).reduce(0, +)
+    }
+
+    /// "45 min", "2 h", "1 h 30". Hours past an hour, because "150 min" has to be divided
+    /// in your head before it means anything.
+    static func durationLabel(minutes: Int) -> String {
+        guard minutes >= 60 else { return "\(minutes) min" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "\(hours) h" : "\(hours) h \(String(format: "%02d", rest))"
+    }
+
+    /// Order inside one section of the list: by day, then the higher priority first among
+    /// tasks due the same day, then the most recently written down. Compared by calendar
+    /// day, not by timestamp — a date picked at 9:14 and one picked at 17:02 are the same
+    /// deadline, and comparing the times made every tie a coin toss on when it was typed.
+    static func precedes(
+        leftDate: Date?, leftPriority: TaskPriority, leftCreatedAt: Date,
+        rightDate: Date?, rightPriority: TaskPriority, rightCreatedAt: Date
+    ) -> Bool {
+        if let leftDate, let rightDate {
+            let calendar = Calendar.current
+            let l = calendar.startOfDay(for: leftDate)
+            let r = calendar.startOfDay(for: rightDate)
+            if l != r { return l < r }
+        } else if (leftDate == nil) != (rightDate == nil) {
+            // Only reached across sections by callers that sort a mixed list; dated first.
+            return leftDate != nil
+        }
+        if leftPriority != rightPriority { return leftPriority.rank > rightPriority.rank }
+        // Undated tasks have nothing else to rank them by, so the most recently written
+        // down comes first — it is the one still fresh in mind.
+        return leftCreatedAt > rightCreatedAt
+    }
 }

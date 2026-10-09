@@ -77,18 +77,25 @@ enum TaskMarkdownExporter {
             text += " 📅 \(dateFormatter.string(from: due))"
         }
 
+        // Tasks-plugin priority signs, so the export sorts the same way in Obsidian.
+        switch task.priority {
+        case .high: text += " ⏫"
+        case .low: text += " 🔽"
+        case .normal: break
+        }
+
+        // Every type can carry an estimate since 0.4.8; a broken-down task exports what its
+        // open subtasks still add up to.
+        if let minutes = task.remainingMinutes, minutes > 0 {
+            text += " (~\(TaskScheduling.durationLabel(minutes: minutes)))"
+        }
+
         switch task.type {
         case .rendu:
             text += " #rendu"
         case .revisionFond:
-            if let minutes = task.estimatedDurationMinutes {
-                text += " (~\(minutes) min)"
-            }
             text += " #revision-fond"
         case .revisionDS:
-            if let minutes = task.estimatedDurationMinutes {
-                text += " (~\(minutes) min)"
-            }
             text += " #revision-ds"
         case .blocage:
             if let waitingOn = task.waitingOn, !waitingOn.isEmpty {

@@ -21,7 +21,15 @@ struct PraxisMCPTools: @unchecked Sendable {
     lointaine). Toute tâche peut porter une date. Les sous-tâches sont des jalons et peuvent \
     porter leur propre date ; la date effective d'une tâche est la plus proche entre la \
     sienne et celles de ses sous-tâches non terminées — c'est elle qui compte pour planifier. \
-    Les dates sont au format AAAA-MM-JJ. Une tâche créée ou modifiée par un outil est marquée \
+    Les dates sont au format AAAA-MM-JJ. Chaque tâche a une priorité (low, normal, high) : \
+    elle ne dit pas l'urgence, que la date porte déjà, mais ce qu'il faut sacrifier quand le \
+    temps manque. Les sous-tâches ont la même échelle, relative à leur tâche : dans une tâche \
+    à tenir, une sous-tâche low est ce qu'on peut bâcler ou sauter. Pour planifier, garder les tâches high coûte que coûte, couper d'abord dans \
+    les low, et le signaler à l'étudiant plutôt que de les déplacer en silence. Chaque tâche \
+    peut porter une durée estimée ; dès qu'elle a des sous-tâches, chacune a sa propre durée \
+    et la durée de la tâche ne compte plus. remainingMinutes donne le travail restant (somme \
+    des sous-tâches non terminées, sinon la durée de la tâche, null si rien n'est estimé) : \
+    c'est lui qu'il faut utiliser pour planifier. Une tâche créée ou modifiée par un outil est marquée \
     « à relire » et reçoit un commentaire horodaté décrivant ce qui a changé, pour que \
     l'étudiant voie et valide ce qui vient d'un agent. Les pièces jointes sont des raccourcis \
     vers des fichiers du vault ; reject_task archive une tâche de façon réversible.
@@ -67,7 +75,8 @@ struct PraxisMCPTools: @unchecked Sendable {
                     "courseId": ["type": "string", "description": "Identifiant de matière (list_courses)."],
                     "dueDate": ["type": "string", "description": "AAAA-MM-JJ"],
                     "detail": ["type": "string"],
-                    "estimatedDurationMinutes": ["type": "integer"],
+                    "priority": Self.prioritySchema,
+                    "estimatedDurationMinutes": Self.durationSchema,
                     "waitingOn": ["type": "string", "description": "Pour un blocage : ce qu'on attend."],
                     "source": ["type": "string", "description": "D'où vient la tâche, par exemple « mail du 12/09 ». Ajouté en commentaire."]
                 ],
@@ -86,7 +95,8 @@ struct PraxisMCPTools: @unchecked Sendable {
                     "courseId": ["type": "string"],
                     "dueDate": ["type": "string", "description": "AAAA-MM-JJ, ou chaîne vide pour retirer la date."],
                     "detail": ["type": "string"],
-                    "estimatedDurationMinutes": ["type": "integer"]
+                    "priority": Self.prioritySchema,
+                    "estimatedDurationMinutes": Self.durationSchema
                 ],
                 "required": ["id"]
             ]
@@ -108,8 +118,9 @@ struct PraxisMCPTools: @unchecked Sendable {
                 "properties": [
                     "taskId": ["type": "string"],
                     "title": ["type": "string"],
-                    "estimatedMinutes": ["type": "integer"],
-                    "dueDate": ["type": "string", "description": "AAAA-MM-JJ"]
+                    "estimatedMinutes": ["type": "integer", "description": "Durée estimée du jalon en minutes, 30 par défaut. Dès le premier jalon, la durée propre de la tâche cesse de compter."],
+                    "dueDate": ["type": "string", "description": "AAAA-MM-JJ"],
+                    "priority": Self.prioritySchema
                 ],
                 "required": ["taskId", "title"]
             ]
@@ -144,6 +155,17 @@ struct PraxisMCPTools: @unchecked Sendable {
                 "required": ["id"]
             ]
         )
+    ]
+
+    private static let prioritySchema: Value = [
+        "type": "string",
+        "enum": ["low", "normal", "high"],
+        "description": "high : à préserver. low : la première à sacrifier si le temps manque. normal par défaut."
+    ]
+
+    private static let durationSchema: Value = [
+        "type": "integer",
+        "description": "Durée estimée en minutes, pour tout type de tâche. Ignorée pour planifier tant que la tâche a des sous-tâches (voir remainingMinutes)."
     ]
 
     // MARK: - Dispatch
@@ -247,7 +269,8 @@ struct PraxisMCPTools: @unchecked Sendable {
         let task = PraxisTask(title: title, type: type, origin: "mcp")
         task.detail = arguments["detail"]?.stringValue
         task.dueDate = try Self.date(from: arguments["dueDate"])
-        task.estimatedDurationMinutes = arguments["estimatedDurationMinutes"]?.intValue
+        task.estimatedDurationMinutes = try Self.minutes(from: arguments["estimatedDurationMinutes"])
+        task.priority = try Self.priority(from: arguments["priority"]) ?? .normal
         task.waitingOn = arguments["waitingOn"]?.stringValue
         if let courseID = arguments["courseId"]?.stringValue {
             task.course = try findCourse(courseID)
@@ -287,9 +310,13 @@ struct PraxisMCPTools: @unchecked Sendable {
             let value = rawDate.isEmpty ? nil : try Self.date(from: arguments["dueDate"])
             if value != task.dueDate { task.dueDate = value; changed.append("date") }
         }
-        if let minutes = arguments["estimatedDurationMinutes"]?.intValue, minutes != task.estimatedDurationMinutes {
+        if let minutes = try Self.minutes(from: arguments["estimatedDurationMinutes"]), minutes != task.estimatedDurationMinutes {
             task.estimatedDurationMinutes = minutes
             changed.append("durée estimée")
+        }
+        if let priority = try Self.priority(from: arguments["priority"]), priority != task.priority {
+            task.priority = priority
+            changed.append("priorité")
         }
         if let courseID = arguments["courseId"]?.stringValue {
             let course = try findCourse(courseID)
@@ -355,12 +382,13 @@ struct PraxisMCPTools: @unchecked Sendable {
         }
         let subtask = Subtask(
             title: title,
-            estimatedMinutes: max(5, arguments["estimatedMinutes"]?.intValue ?? 30),
+            estimatedMinutes: max(5, try Self.minutes(from: arguments["estimatedMinutes"]) ?? 30),
             order: task.subtasks.count,
             origin: "mcp",
             dueDate: try Self.date(from: arguments["dueDate"]),
             parentTask: task
         )
+        subtask.priority = try Self.priority(from: arguments["priority"]) ?? .normal
         taskStore.modelContext.insert(subtask)
         trace("Jalon ajouté via MCP : « \(title) »" + (subtask.dueDate.map { " pour le \(Self.day($0))" } ?? "") + ".", on: task, markForReview: true)
         taskStore.save()
@@ -415,7 +443,9 @@ struct PraxisMCPTools: @unchecked Sendable {
             "dueDate": task.dueDate.map(day) as Any,
             "effectiveDueDate": task.effectiveDueDate.map(day) as Any,
             "horizon": horizonName(task.horizon),
+            "priority": task.priority.rawValue,
             "estimatedDurationMinutes": task.estimatedDurationMinutes as Any,
+            "remainingMinutes": task.remainingMinutes as Any,
             "blockedReason": task.blockedReason as Any,
             "waitingOn": task.waitingOn as Any,
             "needsReview": task.needsReview,
@@ -431,6 +461,7 @@ struct PraxisMCPTools: @unchecked Sendable {
                         "id": subtask.id.uuidString,
                         "title": subtask.title,
                         "estimatedMinutes": subtask.estimatedMinutes,
+                        "priority": subtask.priority.rawValue,
                         "dueDate": subtask.dueDate.map(day) as Any,
                         "isDone": subtask.isDone
                     ]
@@ -464,6 +495,22 @@ struct PraxisMCPTools: @unchecked Sendable {
         guard let raw = value?.stringValue, !raw.isEmpty else { return nil }
         guard let date = dayFormatter.date(from: raw) else { throw ToolError.invalid("date « \(raw) », attendu AAAA-MM-JJ") }
         return date
+    }
+
+    private static func priority(from value: Value?) throws -> TaskPriority? {
+        guard let raw = value?.stringValue, !raw.isEmpty else { return nil }
+        guard let priority = TaskPriority(rawValue: raw) else { throw ToolError.invalid("priorité « \(raw) », attendu low, normal ou high") }
+        return priority
+    }
+
+    /// A duration has to be a positive number of minutes. Zero or less used to be stored
+    /// as-is and would then plan a task as taking no time at all.
+    private static func minutes(from value: Value?) throws -> Int? {
+        guard let value, !value.isNull else { return nil }
+        // Some clients send every number as a double; 90.0 is still 90 minutes.
+        guard let minutes = value.intValue ?? value.doubleValue.flatMap({ Int(exactly: $0) }) else { throw ToolError.invalid("durée, attendu un nombre entier de minutes") }
+        guard minutes > 0 else { throw ToolError.invalid("durée \(minutes), attendu un nombre de minutes positif") }
+        return minutes
     }
 
     /// `nil` in a payload becomes JSON `null`; `Any`-typed optionals are unwrapped for

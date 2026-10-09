@@ -20,7 +20,9 @@ struct TaskFormSheet: View {
     @State private var selectedCourseVaultPath: String?
     @State private var hasDueDate: Bool
     @State private var dueDate: Date
+    @State private var hasEstimatedDuration: Bool
     @State private var estimatedDurationMinutes: Int
+    @State private var priority: TaskPriority
     @State private var blockedReason: String
     @State private var waitingOn: String
     @State private var newSubtaskTitle: String = ""
@@ -34,6 +36,9 @@ struct TaskFormSheet: View {
     /// whole folder tree on every keystroke in the title field.
     @State private var courseTree: [CourseFolderNode] = []
     @State private var isAttachmentDropTargeted = false
+    /// The subtask row under the pointer, so its priority control can show itself there
+    /// and nowhere else.
+    @State private var hoveredSubtaskID: UUID?
 
     init(existingTask: PraxisTask?) {
         self.existingTask = existingTask
@@ -43,7 +48,11 @@ struct TaskFormSheet: View {
         _selectedCourseVaultPath = State(initialValue: existingTask?.course?.id)
         _hasDueDate = State(initialValue: existingTask?.dueDate != nil)
         _dueDate = State(initialValue: existingTask?.dueDate ?? Date())
+        // A new task starts with an estimate offered, since the point is to have one for
+        // every task; an existing task without one stays without until it is asked for.
+        _hasEstimatedDuration = State(initialValue: existingTask.map { $0.estimatedDurationMinutes != nil } ?? true)
         _estimatedDurationMinutes = State(initialValue: existingTask?.estimatedDurationMinutes ?? 60)
+        _priority = State(initialValue: existingTask?.priority ?? .normal)
         _blockedReason = State(initialValue: existingTask?.blockedReason ?? "")
         _waitingOn = State(initialValue: existingTask?.waitingOn ?? "")
     }
@@ -92,6 +101,10 @@ struct TaskFormSheet: View {
             }
 
             dateSection
+
+            prioritySection
+
+            durationSection
 
             typeSpecificFields
 
@@ -201,7 +214,7 @@ struct TaskFormSheet: View {
             HStack {
                 Text("Sous-tâches").font(.caption).foregroundStyle(.secondary)
                 if !subtasks.isEmpty {
-                    Text("\(subtasks.filter(\.isDone).count)/\(subtasks.count) · \(remainingMinutes) min restantes")
+                    Text("\(subtasks.filter(\.isDone).count)/\(subtasks.count) · \(TaskScheduling.durationLabel(minutes: remainingMinutes)) restantes")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                 }
@@ -223,6 +236,11 @@ struct TaskFormSheet: View {
                             .foregroundStyle(subtask.isDone ? .green : .secondary)
                     }
                     .buttonStyle(.plain)
+
+                    SubtaskPriorityControl(
+                        subtask: subtask,
+                        isRowHovered: hoveredSubtaskID == subtask.id
+                    ) { taskStore.save() }
 
                     Text(subtask.title)
                         .strikethrough(subtask.isDone)
@@ -252,6 +270,14 @@ struct TaskFormSheet: View {
                     .buttonStyle(.plain)
                 }
                 .font(.callout)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        hoveredSubtaskID = subtask.id
+                    } else if hoveredSubtaskID == subtask.id {
+                        hoveredSubtaskID = nil
+                    }
+                }
             }
 
             HStack {
@@ -432,17 +458,52 @@ struct TaskFormSheet: View {
         }
     }
 
+    private var prioritySection: some View {
+        HStack {
+            Text("Priorité")
+            Spacer()
+            Picker("Priorité", selection: $priority) {
+                ForEach(TaskPriority.allCases, id: \.self) { level in
+                    Text(level.displayName).tag(level)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .fixedSize()
+        }
+        .help("Haute : à préserver quoi qu'il arrive. Basse : la première sacrifiée si le temps manque.")
+    }
+
+    /// The task's own estimate, for every type. Gone as soon as the task has subtasks:
+    /// each of them carries its own duration, and the subtasks header already adds up
+    /// what is left. Two figures for the same work would only disagree.
+    @ViewBuilder
+    private var durationSection: some View {
+        if existingTask?.subtasks.isEmpty ?? true {
+            HStack {
+                Toggle("Durée estimée", isOn: $hasEstimatedDuration)
+                if hasEstimatedDuration {
+                    Spacer()
+                    Stepper(
+                        TaskScheduling.durationLabel(minutes: estimatedDurationMinutes),
+                        value: $estimatedDurationMinutes,
+                        in: 15...2400,
+                        step: 15
+                    )
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var typeSpecificFields: some View {
         switch type {
-        case .revisionFond, .revisionDS:
-            Stepper("Durée estimée : \(estimatedDurationMinutes) min", value: $estimatedDurationMinutes, in: 15...480, step: 15)
         case .blocage:
             TextField("Raison du blocage", text: $blockedReason)
                 .textFieldStyle(.roundedBorder)
             TextField("En attente de…", text: $waitingOn)
                 .textFieldStyle(.roundedBorder)
-        case .rendu, .anticipation:
+        case .rendu, .revisionFond, .revisionDS, .anticipation:
             EmptyView()
         }
     }
@@ -459,7 +520,12 @@ struct TaskFormSheet: View {
         // Unconditional on purpose. Conditioning this on the type is what used to wipe a
         // date the moment a task was reclassified, silently and without warning.
         task.dueDate = hasDueDate ? dueDate : nil
-        task.estimatedDurationMinutes = (type == .revisionFond || type == .revisionDS) ? estimatedDurationMinutes : nil
+        task.priority = priority
+        // Left alone once the task has subtasks: the field is hidden then, and writing it
+        // would silently erase the estimate that comes back if the subtasks are removed.
+        if task.subtasks.isEmpty {
+            task.estimatedDurationMinutes = hasEstimatedDuration ? estimatedDurationMinutes : nil
+        }
         task.blockedReason = (type == .blocage && !blockedReason.isEmpty) ? blockedReason : nil
         task.waitingOn = (type == .blocage && !waitingOn.isEmpty) ? waitingOn : nil
 
@@ -519,6 +585,75 @@ private struct DurationStepperControl: View {
         formatter.minimum = 5
         return formatter
     }()
+}
+
+/// A subtask's priority, in the space of one glyph before its title.
+///
+/// Most subtasks stay normal, so the control is not there for them: the slot is empty
+/// until the pointer is on the row, then a faint arrow pair offers the choice. A high or
+/// low subtask always shows its arrow, in the same colours as the task list, so the
+/// exception is what catches the eye and the rule costs no ink.
+///
+/// A click steps normal → haute → basse → normal, the right-click menu picks a level
+/// directly. A plain button rather than a `Menu`: a borderless menu on macOS repaints its
+/// label in the control colour, which would lose the orange that makes "haute" readable.
+/// The slot keeps a fixed width so titles do not shift as rows are hovered.
+private struct SubtaskPriorityControl: View {
+    let subtask: Subtask
+    let isRowHovered: Bool
+    let onChange: () -> Void
+
+    var body: some View {
+        Button {
+            set(next(after: subtask.priority))
+        } label: {
+            glyph
+                .frame(width: 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(subtask.priority != .normal || isRowHovered ? 1 : 0)
+        .help("Priorité : \(subtask.priority.displayName.lowercased()). Clic pour changer, clic droit pour choisir.")
+        .contextMenu {
+            ForEach(TaskPriority.allCases.reversed(), id: \.self) { level in
+                Button(level == subtask.priority ? "✓ \(level.displayName)" : level.displayName) {
+                    set(level)
+                }
+            }
+        }
+    }
+
+    private func next(after level: TaskPriority) -> TaskPriority {
+        switch level {
+        case .normal: return .high
+        case .high: return .low
+        case .low: return .normal
+        }
+    }
+
+    private func set(_ level: TaskPriority) {
+        guard level != subtask.priority else { return }
+        subtask.priority = level
+        onChange()
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch subtask.priority {
+        case .high:
+            Image(systemName: "arrow.up")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(subtask.isDone ? AnyShapeStyle(.tertiary) : AnyShapeStyle(Color.orange))
+        case .low:
+            Image(systemName: "arrow.down")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        case .normal:
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.caption2)
+                .foregroundStyle(.quaternary)
+        }
+    }
 }
 
 /// Compact milestone-date control for one subtask: a calendar glyph when unset, the short
