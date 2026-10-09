@@ -71,6 +71,14 @@ enum TaskMarkdownExporter {
         let checkbox = task.isDone ? "- [x]" : "- [ ]"
         var text = "\(checkbox) \(task.title)"
 
+        // Every type can carry an estimate since 0.4.8; a broken-down task exports what its
+        // open subtasks still add up to. Placed in the description, right after the title:
+        // the Tasks plugin reads its signs from the end of the line and stops at plain text,
+        // so anything written after 📅 would hide the date from its queries.
+        if let minutes = task.remainingMinutes, minutes > 0 {
+            text += " (~\(TaskScheduling.durationLabel(minutes: minutes)))"
+        }
+
         // Emitted for every type now that every type can be dated, and taken from the
         // effective date so a dossier exports under the milestone that actually governs it.
         if let due = task.effectiveDueDate {
@@ -82,12 +90,6 @@ enum TaskMarkdownExporter {
         case .high: text += " ⏫"
         case .low: text += " 🔽"
         case .normal: break
-        }
-
-        // Every type can carry an estimate since 0.4.8; a broken-down task exports what its
-        // open subtasks still add up to.
-        if let minutes = task.remainingMinutes, minutes > 0 {
-            text += " (~\(TaskScheduling.durationLabel(minutes: minutes)))"
         }
 
         switch task.type {

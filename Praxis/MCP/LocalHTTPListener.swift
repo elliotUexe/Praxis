@@ -125,7 +125,9 @@ final class LocalHTTPListener: @unchecked Sendable {
 
         let bodyStart = headEnd.upperBound
         let length = Int(headers["content-length"] ?? "0") ?? 0
-        guard length <= maximumBodyBytes else { return .malformed }
+        // A negative length would make `consumed` point before the body and trap on the
+        // next slice — any local process could take Praxis down before the token check.
+        guard length >= 0, length <= maximumBodyBytes else { return .malformed }
         guard data.count >= bodyStart + length else { return .incomplete }
         let body = length > 0 ? data.subdata(in: bodyStart..<(bodyStart + length)) : nil
 

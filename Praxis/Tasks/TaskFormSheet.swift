@@ -48,9 +48,9 @@ struct TaskFormSheet: View {
         _selectedCourseVaultPath = State(initialValue: existingTask?.course?.id)
         _hasDueDate = State(initialValue: existingTask?.dueDate != nil)
         _dueDate = State(initialValue: existingTask?.dueDate ?? Date())
-        // A new task starts with an estimate offered, since the point is to have one for
-        // every task; an existing task without one stays without until it is asked for.
-        _hasEstimatedDuration = State(initialValue: existingTask.map { $0.estimatedDurationMinutes != nil } ?? true)
+        // Off until asked for. A default 60 min on every new task would hand a planner an
+        // estimate nobody made — "en attente du prof" would cost an hour of work.
+        _hasEstimatedDuration = State(initialValue: existingTask?.estimatedDurationMinutes != nil)
         _estimatedDurationMinutes = State(initialValue: existingTask?.estimatedDurationMinutes ?? 60)
         _priority = State(initialValue: existingTask?.priority ?? .normal)
         _blockedReason = State(initialValue: existingTask?.blockedReason ?? "")

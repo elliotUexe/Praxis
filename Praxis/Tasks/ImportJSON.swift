@@ -23,9 +23,9 @@ struct PendingTaskCreation: Decodable {
     let blockedReason: String?
     let waitingOn: String?
     let horizonDate: String?
-    /// "low" | "normal" | "high". Optional, and an unknown value is ignored rather than
-    /// failing the whole batch.
-    let priority: String?
+    /// "low" | "normal" | "high". Optional; an unknown or mistyped value is ignored rather
+    /// than failing the whole batch (see `LenientPriority`).
+    let priority: LenientPriority?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -36,7 +36,7 @@ struct PendingTaskCreation: Decodable {
 
     func apply(to task: PraxisTask) {
         task.estimatedDurationMinutes = estimatedDurationMinutes
-        if let priority = priority.flatMap(TaskPriority.init(rawValue:)) { task.priority = priority }
+        if let priority = priority?.value { task.priority = priority }
         task.blockedReason = blockedReason
         task.waitingOn = waitingOn
         // Both JSON keys land in `dueDate`: since 0.4 that is the only date a task has, and
@@ -67,9 +67,9 @@ struct PendingFieldChanges: Decodable {
     let blockedReason: String?
     let waitingOn: String?
     let horizonDate: String?
-    /// "low" | "normal" | "high". Optional, and an unknown value is ignored rather than
-    /// failing the whole batch.
-    let priority: String?
+    /// "low" | "normal" | "high". Optional; an unknown or mistyped value is ignored rather
+    /// than failing the whole batch (see `LenientPriority`).
+    let priority: LenientPriority?
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -83,10 +83,23 @@ struct PendingFieldChanges: Decodable {
     func apply(to task: PraxisTask) {
         if let title { task.title = title }
         if let estimatedDurationMinutes { task.estimatedDurationMinutes = estimatedDurationMinutes }
-        if let priority = priority.flatMap(TaskPriority.init(rawValue:)) { task.priority = priority }
+        if let priority = priority?.value { task.priority = priority }
         if let blockedReason { task.blockedReason = blockedReason }
         if let waitingOn { task.waitingOn = waitingOn }
         // Same single destination as a creation; see `ImportedTaskJSON.apply(to:)`.
-        if let raw = dueDate ?? horizonDate { task.dueDate = Self.dateFormatter.date(from: raw) }
+        // An unreadable date leaves the current one alone instead of erasing it.
+        if let raw = dueDate ?? horizonDate, let date = Self.dateFormatter.date(from: raw) { task.dueDate = date }
+    }
+}
+
+/// A priority read from a batch that never fails to decode: `"high"` gives `.high`, while
+/// `2`, `true` or `"urgent"` give nil, so a skill getting one field wrong does not lose
+/// every other task in the file.
+struct LenientPriority: Decodable {
+    let value: TaskPriority?
+
+    init(from decoder: Decoder) throws {
+        let raw = try? decoder.singleValueContainer().decode(String.self)
+        value = raw.flatMap(TaskPriority.init(rawValue:))
     }
 }

@@ -266,15 +266,18 @@ struct PraxisMCPTools: @unchecked Sendable {
             throw ToolError.invalid("type")
         }
 
+        let dueDate = try Self.date(from: arguments["dueDate"])
+        let minutes = try Self.minutes(from: arguments["estimatedDurationMinutes"])
+        let priority = try Self.priority(from: arguments["priority"]) ?? .normal
+        let course = try arguments["courseId"]?.stringValue.map { try findCourse($0) }
+
         let task = PraxisTask(title: title, type: type, origin: "mcp")
         task.detail = arguments["detail"]?.stringValue
-        task.dueDate = try Self.date(from: arguments["dueDate"])
-        task.estimatedDurationMinutes = try Self.minutes(from: arguments["estimatedDurationMinutes"])
-        task.priority = try Self.priority(from: arguments["priority"]) ?? .normal
+        task.dueDate = dueDate
+        task.estimatedDurationMinutes = minutes
+        task.priority = priority
         task.waitingOn = arguments["waitingOn"]?.stringValue
-        if let courseID = arguments["courseId"]?.stringValue {
-            task.course = try findCourse(courseID)
-        }
+        task.course = course
         taskStore.modelContext.insert(task)
 
         if let source = arguments["source"]?.stringValue, !source.isEmpty {
@@ -292,35 +295,49 @@ struct PraxisMCPTools: @unchecked Sendable {
     @MainActor
     private func updateTask(_ arguments: [String: Value]) throws -> Any {
         let task = try findTask(arguments["id"]?.stringValue)
+
+        // Everything that can be refused is checked before anything is written. A throw
+        // halfway through used to leave the first fields changed in the context, saved by
+        // the next unrelated save with no comment and no review badge.
+        let newType: TaskType? = try arguments["type"]?.stringValue.map {
+            guard let type = TaskType(rawValue: $0) else { throw ToolError.invalid("type") }
+            return type
+        }
+        let rawDate = arguments["dueDate"]?.stringValue
+        let newDate = (rawDate?.isEmpty ?? true) ? nil : try Self.date(from: arguments["dueDate"])
+        let newMinutes = try Self.minutes(from: arguments["estimatedDurationMinutes"])
+        let newPriority = try Self.priority(from: arguments["priority"])
+        let newCourse = try arguments["courseId"]?.stringValue.map { try findCourse($0) }
+
         var changed: [String] = []
 
         if let title = arguments["title"]?.stringValue, !title.isEmpty, title != task.title {
             task.title = title
             changed.append("titre")
         }
-        if let rawType = arguments["type"]?.stringValue {
-            guard let type = TaskType(rawValue: rawType) else { throw ToolError.invalid("type") }
-            if type != task.type { task.type = type; changed.append("type") }
+        if let newType, newType != task.type {
+            task.type = newType
+            changed.append("type")
         }
         if let detail = arguments["detail"]?.stringValue {
             let value = detail.isEmpty ? nil : detail
             if value != task.detail { task.detail = value; changed.append("détail") }
         }
-        if let rawDate = arguments["dueDate"]?.stringValue {
-            let value = rawDate.isEmpty ? nil : try Self.date(from: arguments["dueDate"])
-            if value != task.dueDate { task.dueDate = value; changed.append("date") }
+        if rawDate != nil, newDate != task.dueDate {
+            task.dueDate = newDate
+            changed.append("date")
         }
-        if let minutes = try Self.minutes(from: arguments["estimatedDurationMinutes"]), minutes != task.estimatedDurationMinutes {
-            task.estimatedDurationMinutes = minutes
+        if let newMinutes, newMinutes != task.estimatedDurationMinutes {
+            task.estimatedDurationMinutes = newMinutes
             changed.append("durée estimée")
         }
-        if let priority = try Self.priority(from: arguments["priority"]), priority != task.priority {
-            task.priority = priority
+        if let newPriority, newPriority != task.priority {
+            task.priority = newPriority
             changed.append("priorité")
         }
-        if let courseID = arguments["courseId"]?.stringValue {
-            let course = try findCourse(courseID)
-            if course.stableID != task.course?.stableID { task.course = course; changed.append("matière") }
+        if let newCourse, newCourse.stableID != task.course?.stableID {
+            task.course = newCourse
+            changed.append("matière")
         }
 
         guard !changed.isEmpty else { return Self.summary(of: task) }
@@ -380,15 +397,20 @@ struct PraxisMCPTools: @unchecked Sendable {
         guard let title = arguments["title"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty else {
             throw ToolError.missing("title")
         }
+        // Parsed before the subtask exists: linking it to a managed parent can insert it,
+        // and a refusal after that would leave it attached.
+        let minutes = max(5, try Self.minutes(from: arguments["estimatedMinutes"]) ?? 30)
+        let dueDate = try Self.date(from: arguments["dueDate"])
+        let priority = try Self.priority(from: arguments["priority"]) ?? .normal
         let subtask = Subtask(
             title: title,
-            estimatedMinutes: max(5, try Self.minutes(from: arguments["estimatedMinutes"]) ?? 30),
+            estimatedMinutes: minutes,
             order: task.subtasks.count,
             origin: "mcp",
-            dueDate: try Self.date(from: arguments["dueDate"]),
+            dueDate: dueDate,
             parentTask: task
         )
-        subtask.priority = try Self.priority(from: arguments["priority"]) ?? .normal
+        subtask.priority = priority
         taskStore.modelContext.insert(subtask)
         trace("Jalon ajouté via MCP : « \(title) »" + (subtask.dueDate.map { " pour le \(Self.day($0))" } ?? "") + ".", on: task, markForReview: true)
         taskStore.save()
